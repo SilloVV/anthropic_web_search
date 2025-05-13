@@ -1,6 +1,7 @@
 import anthropic
 from dotenv import load_dotenv
 import sys
+import json
 
 load_dotenv()
 
@@ -42,8 +43,7 @@ messages = [
     {
         "role": "user",
         "content": user_input
-    },
-    
+    },  
 ]
 tools = [{
     "type": "web_search_20250305",
@@ -59,6 +59,11 @@ complete_response_text = ""
 # Démarrer le streaming
 print("\n=== RÉPONSE EN STREAMING ===")
 
+# Pour suivre si nous sommes au milieu d'une recherche web
+current_search_query = ""
+building_query = False
+query_parts = []
+
 with client.messages.stream(
     model=model,
     max_tokens=max_tokens,
@@ -67,10 +72,54 @@ with client.messages.stream(
     messages=messages,
     tools=tools
 ) as stream:
-    # Utiliser directement le text_stream au lieu de parcourir les événements
-    for text in stream.text_stream:
-        complete_response_text += text
-        print(text, end="", flush=True)
+    # Parcourir tous les événements de streaming
+    for event in stream:
+        # Traiter chaque type d'événement
+        if event.type == "content_block_start":
+            # Vérifier si c'est le début d'un bloc d'utilisation d'outil
+            if hasattr(event, "content_block") and hasattr(event.content_block, "type"):
+                if event.content_block.type == "server_tool_use" and event.content_block.name == "web_search":
+                    building_query = True
+                    query_parts = []
+        
+        elif event.type == "content_block_delta":
+            # Si nous sommes en train de construire une requête
+            if building_query and hasattr(event, "delta") and hasattr(event.delta, "type"):
+                if event.delta.type == "input_json_delta" and hasattr(event.delta, "partial_json"):
+                    query_parts.append(event.delta.partial_json)
+            
+            # Si c'est un delta de texte normal à afficher
+            elif hasattr(event, "delta") and hasattr(event.delta, "type"):
+                if event.delta.type == "text_delta" and hasattr(event.delta, "text"):
+                    text = event.delta.text
+                    complete_response_text += text
+                    print(text, end="", flush=True)
+        
+        elif event.type == "content_block_stop":
+            # Si nous terminons la construction d'une requête de recherche
+            if building_query:
+                building_query = False
+                # Essayer de reconstituer et d'extraire la requête
+                try:
+                    query_json = "".join(query_parts)
+                    # Si le JSON est complet
+                    if query_json.startswith("{") and query_json.endswith("}"):
+                        query_data = json.loads(query_json)
+                        if "query" in query_data:
+                            print(f"\n\033[33mJe recherche les mots clés '{query_data['query']}'...\033[0m\n")
+                    else:
+                        # Tenter d'extraire la requête à partir du JSON partiel
+                        if "query" in query_json:
+                            # Extraction approximative
+                            query_start = query_json.find('"query"')
+                            if query_start != -1:
+                                query_text = query_json[query_start:].split('":', 1)[1].strip()
+                                # Nettoyer la chaîne
+                                query_text = query_text.strip('"').strip('}').strip('"')
+                                print(f"\n\033[33mJe recherche les mots clés '{query_text}'...\033[0m\n")
+                except Exception as e:
+                    # En cas d'erreur de parsing, afficher une information générique
+                    print(f"\n\033[33mRecherche en cours...\033[0m\n")
     
     # Récupérer le message final
     final_message = stream.get_final_message()
@@ -82,7 +131,7 @@ print("\n\n=== STATISTIQUES D'UTILISATION ===")
 usage = final_message.usage
 input_tokens = usage.input_tokens if usage else "Non disponible"
 output_tokens = usage.output_tokens if usage else "Non disponible"
-web_search_requests = usage.server_tool_use.web_search_requests if usage and usage.server_tool_use else "Non disponible"
+web_search_requests = usage.server_tool_use.web_search_requests if usage and usage.server_tool_use else 0
 
 print(f" Input Tokens: {input_tokens}")
 print(f" Output Tokens: {output_tokens}")
