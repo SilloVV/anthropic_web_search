@@ -145,6 +145,9 @@ if prompt:
     # Afficher la question dans l'interface
     with st.chat_message("user"):
         st.markdown(prompt)
+        
+    # récupérer la date actuelle
+    date = time.strftime("%d/%m/%Y")
 
     # Préparer le système prompt
     system = [
@@ -152,6 +155,11 @@ if prompt:
             "type": "text",
             "text": "Tu es un assistant IA Français spécialisé dans le domaine du droit français.\n",
         },
+        {
+            "type": "text",
+            "text": "Nous somme le {date}\n",
+        },
+        
         {
             "type": "text",
             "text": "Tu es capable de répondre à des questions juridiques et de fournir des conseils sur des sujets liés au droit français en citant des références en droit français.\n",
@@ -365,6 +373,7 @@ if prompt:
                     🔎 Recherches web: {web_search_requests} | 
                     💲 Coût en recherches web estimé: {search_cost:.6f} | 
                     💲 Coût total estimé: {total_cost:.6f}
+                     Raison d'arrêt: {final_message.stop_reason}
                     """
                 )
                 
