@@ -6,10 +6,12 @@ load_dotenv()
 
 client = anthropic.Anthropic()
 
+user_input = input("Entrez votre question : ")
+
 # Paramètres de la requête
 model = "claude-3-7-sonnet-latest"
-max_tokens = 1024
-temperature = 1
+max_tokens = 1500
+temperature = 0.4
 system = [
     {
         "type": "text",
@@ -25,20 +27,29 @@ system = [
     },
     {
         "type": "text",
+        "text": "Important : Pour toutes tes réponses nécessitant des sources externes : Utilise systématiquement le format de citation suivant :<titre>Titre complet de la source</titre> <url>Lien exact vers la source</url><extrait>Extrait pertinent et concis de la source (limité à 2-3 phrases clés)</extrait> \n ",
+    },
+    {
+        "type": "text",
         "text": "Tu dois toujours respecter la vie privée et la confidentialité des utilisateurs.\n",
-    }
+    },
+    {
+        "type": "text",
+        "text": "Retourne les sources pertinentes à la fin de ta réponse sous forme d'une liste avec titre et url.\n",
+    },
 ]
 messages = [
     {
         "role": "user",
-        "content": "est-ce qu'un enfant peut être commerçant ?"
-    }
+        "content": user_input
+    },
+    
 ]
 tools = [{
     "type": "web_search_20250305",
     "name": "web_search",
-    "max_uses": 3,
-    "allowed_domains": ["www.legifrance.gouv.fr", "annuaire-entreprises.data.gouv.fr"],
+    "max_uses": 2,
+    "allowed_domains": ["www.legifrance.gouv.fr", "annuaire-entreprises.data.gouv.fr", "service-public.fr"],
     # "blocked_domains": [""],
 }]
 
@@ -73,20 +84,20 @@ input_tokens = usage.input_tokens if usage else "Non disponible"
 output_tokens = usage.output_tokens if usage else "Non disponible"
 web_search_requests = usage.server_tool_use.web_search_requests if usage and usage.server_tool_use else "Non disponible"
 
-print(f"Input Tokens: {input_tokens}")
-print(f"Output Tokens: {output_tokens}")
-print(f"Web Search Requests: {web_search_requests}")
-print(f"Raison d'arrêt: {final_message.stop_reason}")
+print(f" Input Tokens: {input_tokens}")
+print(f" Output Tokens: {output_tokens}")
+print(f" Web Search Requests: {web_search_requests}")
+print(f" Raison d'arrêt: {final_message.stop_reason}")
 
 # Afficher le contenu bloc par bloc comme dans votre code original
 for i, block in enumerate(final_message.content):
     # Afficher les citations si présentes
     if hasattr(block, 'citations') and block.citations:
-        print("\nCITATIONS:")
         for j, citation in enumerate(block.citations):
-            print(f"  Citation #{j+1}:")
             if hasattr(citation, 'title'):
-                print(f"    Titre: {citation.title}")
+                print(f" Titre: {citation.title}")
+                print(f"  Citation #{j+1}:")
+            
             if hasattr(citation, 'url'):
                 print(f"    URL: {citation.url}")
             if hasattr(citation, 'cited_text'):
