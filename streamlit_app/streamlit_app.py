@@ -231,7 +231,7 @@ with st.sidebar:
     
     # Téléchargement de document
     st.subheader("Document de référence")
-    uploaded_file = st.file_uploader("Télécharger un PDF", type=["pdf"])
+    uploaded_file = st.file_uploader("Télécharger un PDF (8 Mo Maximum)", type=["pdf"])
     
     # Si un fichier est téléchargé, l'enregistrer dans la session
     if uploaded_file is not None:
@@ -319,7 +319,7 @@ if prompt:
         },
         {
             "type": "text",
-            "text": "La date d'ajourd'hui est le {date}.\n",
+            "text": "La date d'ajourd'hui est le {date}. Ce qui est après 2024. \n",
         },
         {
             "type": "text",
@@ -377,7 +377,9 @@ if prompt:
         "name": "web_search",
         "max_uses": max_searches,
         "allowed_domains": allowed_domains,
-    }]
+    }
+   
+             ]
     
     # Réinitialiser les erreurs de recherche
     st.session_state.search_errors = []
