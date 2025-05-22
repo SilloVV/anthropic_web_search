@@ -263,7 +263,7 @@ with st.sidebar:
     # Sélection du modèle
     model = st.selectbox(
         "Modèle Claude",
-        ["claude-3-5-haiku-latest"]
+        ["claude-3-5-haiku-latest", "claude-3-7-sonnet-latest"],
     )
     
     # Paramètres avancés
