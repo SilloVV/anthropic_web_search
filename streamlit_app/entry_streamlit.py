@@ -11,6 +11,17 @@ st.sidebar.success("Ceci est une barre latérale verte.")
 
 st.markdown(
     """
-    Choisis la page que tu veux explorer ci-dessus.
+    <--- Choisis la page que tu veux explorer
 """
 )
+
+
+st.markdown("""
+<style>
+.image-70-percent {
+    margin-left: 70%;
+    transform: translateX(-50%);
+}
+</style>
+""", unsafe_allow_html=True)
+

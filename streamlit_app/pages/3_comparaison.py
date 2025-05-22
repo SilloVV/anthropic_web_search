@@ -348,51 +348,90 @@ if 'messages_right' not in st.session_state:
 if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
 
-# CSS personnalisé
+# CSS personnalisé avec support dark mode
 st.markdown("""
 <style>
+/* Variables CSS pour les couleurs */
+:root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f8f9fa;
+    --text-primary: #333333;
+    --border-color: #e0e0e0;
+    --shadow-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode */
+[data-theme="dark"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #2d2d2d;
+    --text-primary: #ffffff;
+    --border-color: #404040;
+    --shadow-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Détection automatique du dark mode */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-primary: #1e1e1e;
+        --bg-secondary: #2d2d2d;
+        --text-primary: #ffffff;
+        --border-color: #404040;
+        --shadow-color: rgba(255, 255, 255, 0.1);
+    }
+}
+
 .model-panel {
     padding: 15px;
     border-radius: 8px;
     margin: 10px 0;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    box-shadow: 0 2px 4px var(--shadow-color);
 }
 
 .haiku-panel {
     border-left: 4px solid #28a745;
-    background-color: rgba(240, 255, 240, 0.3);
+    background-color: rgba(40, 167, 69, 0.1);
 }
 
 .sonnet-panel {
     border-left: 4px solid #007bff;
-    background-color: rgba(240, 248, 255, 0.3);
+    background-color: rgba(0, 123, 255, 0.1);
 }
 
 .perplexity-panel {
     border-left: 4px solid #ff6b35;
-    background-color: rgba(255, 248, 240, 0.3);
+    background-color: rgba(255, 107, 53, 0.1);
 }
 
 .stats-box {
-    background-color: rgba(248, 249, 250, 0.8);
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
     padding: 10px;
     border-radius: 5px;
     margin: 5px 0;
     font-size: 0.9em;
+    border: 1px solid var(--border-color);
 }
 
 .sources-box {
-    background-color: rgba(230, 245, 255, 0.8);
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
     padding: 10px;
     border-radius: 5px;
-    margin: 5px 0;
+    margin: 15px 0;
     border-left: 3px solid #007bff;
+    border: 1px solid var(--border-color);
+    max-height: 300px;
+    overflow-y: auto;
 }
 
 .source-item {
-    margin: 5px 0;
-    padding: 5px;
-    background-color: rgba(255, 255, 255, 0.5);
-    border-radius: 3px;
+    margin: 8px 0;
+    padding: 8px;
+    background-color: var(--bg-primary);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
 }
 
 .error-box {
@@ -402,6 +441,42 @@ st.markdown("""
     margin: 5px 0;
     color: #721c24;
     border: 1px solid #f5c6cb;
+}
+
+/* Dark mode pour les erreurs */
+@media (prefers-color-scheme: dark) {
+    .error-box {
+        background-color: rgba(139, 0, 0, 0.3);
+        color: #ffb3b3;
+        border-color: #8b0000;
+    }
+}
+
+/* Amélioration de la lisibilité des liens */
+.source-item a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+.source-item a:hover {
+    text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+    .source-item a {
+        color: #66b3ff;
+    }
+}
+
+/* Espacement pour éviter les chevauchements */
+.response-container {
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+}
+
+.sources-container {
+    margin-top: 15px;
+    clear: both;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -471,14 +546,14 @@ with st.sidebar:
     # Statut des clés API
     st.subheader("🔑 Statut des clés API")
     if anthropic_key:
-        st.success("✅ Clé Anthropic configurée")
+        st.success("✅ Clé Anthropic chargée depuis .env")
     else:
-        st.error("❌ Clé Anthropic manquante dans les secrets")
+        st.error("❌ Clé ANTHROPIC_API_KEY manquante dans .env")
     
     if perplexity_key:
-        st.success("✅ Clé Perplexity configurée")
+        st.success("✅ Clé Perplexity chargée depuis .env")
     else:
-        st.error("❌ Clé Perplexity manquante dans les secrets")
+        st.error("❌ Clé PERPLEXITY_API_KEY manquante dans .env")
     
     # Debug
     debug_mode = st.checkbox("Mode debug", value=False)
@@ -503,7 +578,13 @@ if "perplexity" in keys_needed and not perplexity_key:
     missing_keys.append("Perplexity")
 
 if missing_keys:
-    st.error(f"❌ Clés API manquantes dans les secrets: {', '.join(missing_keys)}")
+    st.error(f"❌ Clés API manquantes dans le fichier .env: {', '.join(missing_keys)}")
+    st.info("💡 Ajoutez vos clés dans le fichier .env :")
+    st.code("""
+# Fichier .env
+ANTHROPIC_API_KEY=votre_clé_anthropic
+PERPLEXITY_API_KEY=votre_clé_perplexity
+""")
     st.stop()
 
 # Fonction pour afficher les messages avec style
@@ -526,11 +607,11 @@ def display_messages(messages, model_name):
                 # Message avec document
                 text_content = next((item.get("text", "") for item in message["content"] 
                                    if isinstance(item, dict) and item.get("type") == "text"), "")
-                st.markdown(text_content)
+                st.markdown(f'<div class="response-container">{text_content}</div>', unsafe_allow_html=True)
                 if any(item.get("type") == "document" for item in message["content"] if isinstance(item, dict)):
                     st.info("📎 Document PDF joint")
             else:
-                st.markdown(message["content"])
+                st.markdown(f'<div class="response-container">{message["content"]}</div>', unsafe_allow_html=True)
             
             # Afficher les statistiques si disponibles
             if message.get("stats"):
@@ -546,8 +627,9 @@ def display_messages(messages, model_name):
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Afficher les sources
+                # Afficher les sources dans un conteneur séparé
                 if stats.get('sources'):
+                    st.markdown('<div class="sources-container">', unsafe_allow_html=True)
                     sources_html = '<div class="sources-box"><h4>📚 Sources consultées:</h4>'
                     for i, source in enumerate(stats['sources']):
                         title = source.get('title', 'Source inconnue')
@@ -557,11 +639,12 @@ def display_messages(messages, model_name):
                         if url:
                             sources_html += f'<a href="{url}" target="_blank">🔗 {url}</a><br>'
                         if source.get('text'):
-                            excerpt = source['text'][:200] + "..." if len(source['text']) > 200 else source['text']
+                            excerpt = source['text'][:150] + "..." if len(source['text']) > 150 else source['text']
                             sources_html += f'<em>Extrait: "{excerpt}"</em>'
                         sources_html += '</div>'
                     sources_html += '</div>'
                     st.markdown(sources_html, unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
             
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -656,7 +739,8 @@ if prompt:
                     if error_left:
                         st.markdown(f'<div class="error-box">❌ {error_left}</div>', unsafe_allow_html=True)
                     elif content_left:
-                        st.markdown(content_left)
+                        # Afficher la réponse dans un conteneur séparé
+                        st.markdown(f'<div class="response-container">{content_left}</div>', unsafe_allow_html=True)
                         
                         # Afficher les statistiques
                         if stats_left:
@@ -679,22 +763,25 @@ if prompt:
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            # Afficher les sources
+                            # Afficher les sources dans un conteneur séparé et collapsible
                             if stats_left.get('sources'):
-                                sources_html = '<div class="sources-box"><h4>📚 Sources consultées:</h4>'
-                                for i, source in enumerate(stats_left['sources']):
-                                    title = source.get('title', 'Source inconnue')
-                                    url = source.get('url', '')
-                                    sources_html += f'<div class="source-item">'
-                                    sources_html += f'<strong>Source {i+1}:</strong> {title}<br>'
-                                    if url:
-                                        sources_html += f'<a href="{url}" target="_blank">🔗 {url}</a><br>'
-                                    if source.get('text'):
-                                        excerpt = source['text'][:200] + "..." if len(source['text']) > 200 else source['text']
-                                        sources_html += f'<em>Extrait: "{excerpt}"</em>'
+                                with st.expander("📚 Sources consultées", expanded=False):
+                                    st.markdown('<div class="sources-container">', unsafe_allow_html=True)
+                                    sources_html = '<div class="sources-box">'
+                                    for i, source in enumerate(stats_left['sources']):
+                                        title = source.get('title', 'Source inconnue')
+                                        url = source.get('url', '')
+                                        sources_html += f'<div class="source-item">'
+                                        sources_html += f'<strong>Source {i+1}:</strong> {title}<br>'
+                                        if url:
+                                            sources_html += f'<a href="{url}" target="_blank">🔗 {url}</a><br>'
+                                        if source.get('text'):
+                                            excerpt = source['text'][:150] + "..." if len(source['text']) > 150 else source['text']
+                                            sources_html += f'<em>Extrait: "{excerpt}"</em>'
+                                        sources_html += '</div>'
                                     sources_html += '</div>'
-                                sources_html += '</div>'
-                                st.markdown(sources_html, unsafe_allow_html=True)
+                                    st.markdown(sources_html, unsafe_allow_html=True)
+                                    st.markdown('</div>', unsafe_allow_html=True)
                         
                         # Ajouter à l'historique
                         st.session_state.messages_left.append({
@@ -798,7 +885,7 @@ if prompt:
                 st.metric(
                     "⏱️ Temps de réponse",
                     f"{model_left}: {stats_left['response_time']}s",
-                    f"{model_right}: {stats_right['response_time']}s",
+                    f"{time_diff:+.2f}s vs {model_right}"
                 )
             
             with col_perf2:
@@ -806,7 +893,7 @@ if prompt:
                 st.metric(
                     "🔤 Tokens de sortie",
                     f"{model_left}: {stats_left['output_tokens']}",
-                    f"{model_right}: {stats_right['output_tokens']}",
+                    f"{tokens_diff:+d} vs {model_right}"
                 )
             
             with col_perf3:
@@ -814,7 +901,7 @@ if prompt:
                 st.metric(
                     "🔍 Recherches web",
                     f"{model_left}: {stats_left['web_searches']}",
-                    f"{model_right}: {stats_right['web_searches']}",
+                    f"{searches_diff:+d} vs {model_right}"
                 )
             
             with col_perf4:
@@ -822,7 +909,7 @@ if prompt:
                 st.metric(
                     "💲 Coût total",
                     f"{model_left}: ${stats_left['total_cost']:.6f}",
-                    f"{model_right}: ${stats_right['total_cost']:.6f}",
+                    f"${cost_diff:+.6f} vs {model_right}"
                 )
             
             # Afficher les coûts détaillés en mode debug
