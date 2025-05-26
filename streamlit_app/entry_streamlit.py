@@ -7,7 +7,7 @@ st.set_page_config(
 
 st.write("# Bienvenue dans le Streamlit IA! 👋")
 
-st.sidebar.success("Ceci est une barre latérale verte.")
+st.sidebar.success("↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑")
 
 st.markdown(
     """

@@ -8,6 +8,18 @@ from dotenv import load_dotenv
 import os
 import base64
 import traceback
+from datetime import datetime
+import uuid
+import hashlib
+
+# Firebase imports
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    st.warning("⚠️ Firebase non installé. Mode local uniquement. Installez avec: pip install firebase-admin")
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -19,7 +31,187 @@ st.set_page_config(
     layout="wide"
 )
 
-# Fonction pour encoder un PDF en base64
+# ==================== FIREBASE CONFIGURATION ====================
+
+def init_firebase():
+    """Initialise la connexion Firebase"""
+    if not FIREBASE_AVAILABLE:
+        return None
+    
+    try:
+        # Vérifier si Firebase est déjà initialisé
+        if firebase_admin._apps:
+            return firestore.client()
+        
+        # Récupérer les credentials depuis les variables d'environnement
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
+        project_id = os.getenv("FIREBASE_PROJECT_ID")
+        
+        # Debug : afficher les valeurs
+        if not cred_path:
+            st.error("❌ FIREBASE_CREDENTIALS_PATH non défini dans .env")
+            return None
+            
+        if not project_id:
+            st.error("❌ FIREBASE_PROJECT_ID non défini dans .env")
+            return None
+            
+        # Vérifier que le fichier existe
+        if not os.path.exists(cred_path):
+            st.error(f"❌ Fichier credentials introuvable : {cred_path}")
+            st.info(f"📁 Répertoire actuel : {os.getcwd()}")
+            if os.path.exists('./firebase'):
+                st.info(f"📁 Fichiers dans firebase/ : {os.listdir('./firebase')}")
+            else:
+                st.info("📁 Dossier firebase/ inexistant")
+            return None
+        
+        # Vérifier que le fichier JSON est valide
+        try:
+            with open(cred_path, 'r') as f:
+                cred_data = json.load(f)
+                if cred_data.get('project_id') != project_id:
+                    st.warning(f"⚠️ Project ID dans credentials ({cred_data.get('project_id')}) != .env ({project_id})")
+        except json.JSONDecodeError:
+            st.error(f"❌ Fichier JSON credentials invalide : {cred_path}")
+            return None
+        
+        # Initialiser Firebase
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred, {
+            'projectId': project_id,
+        })
+        
+        # Tester la connexion
+        db = firestore.client()
+        
+        # Test simple : essayer de lire une collection
+        try:
+            test_collection = db.collection('test')
+            list(test_collection.limit(1).stream())
+            st.success("✅ Firebase connecté avec succès !")
+        except Exception as test_error:
+            st.error(f"❌ Test de connexion Firebase échoué : {str(test_error)}")
+            return None
+        
+        return db
+    
+    except Exception as e:
+        st.error(f"❌ Erreur d'initialisation Firebase : {str(e)}")
+        return None
+
+def get_session_id():
+    """Génère ou récupère l'ID de session unique"""
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    return st.session_state.session_id
+
+def create_question_hash(question):
+    """Crée un hash unique pour une question"""
+    return hashlib.md5(question.encode()).hexdigest()[:16]
+
+def save_vote_to_firebase(db, exchange_id, vote_choice, question, model_left, model_right):
+    """Sauvegarde un vote dans Firebase"""
+    if not db:
+        return False
+    
+    try:
+        session_id = get_session_id()
+        question_hash = create_question_hash(question)
+        
+        vote_data = {
+            "exchange_id": exchange_id,
+            "question": question,
+            "question_hash": question_hash,
+            "model_left": model_left,
+            "model_right": model_right,
+            "vote": vote_choice,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+            "user_session_id": session_id
+        }
+        
+        doc_id = f"{session_id}_{exchange_id}"
+        db.collection('votes').document(doc_id).set(vote_data)
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Erreur sauvegarde Firebase : {str(e)}")
+        return False
+
+def load_votes_from_firebase(db, session_id=None):
+    """Charge les votes depuis Firebase"""
+    if not db:
+        return []
+    
+    try:
+        query = db.collection('votes')
+        if session_id:
+            query = query.where('user_session_id', '==', session_id)
+        
+        docs = query.order_by('timestamp').stream()
+        votes = []
+        for doc in docs:
+            data = doc.to_dict()
+            if data.get('timestamp'):
+                data['timestamp'] = data['timestamp'].isoformat()
+            votes.append(data)
+        
+        return votes
+        
+    except Exception as e:
+        st.error(f"❌ Erreur chargement Firebase : {str(e)}")
+        return []
+
+def get_firebase_stats(db):
+    """Récupère les statistiques globales depuis Firebase"""
+    if not db:
+        return {}
+    
+    try:
+        votes = load_votes_from_firebase(db)
+        
+        if not votes:
+            return {}
+        
+        stats = {
+            "total_votes": len(votes),
+            "model_performance": {}
+        }
+        
+        model_votes = {}
+        
+        for vote in votes:
+            left_model = vote["model_left"]
+            right_model = vote["model_right"]
+            winner = vote["vote"]
+            
+            if left_model not in model_votes:
+                model_votes[left_model] = {"wins": 0, "losses": 0, "ties": 0}
+            if right_model not in model_votes:
+                model_votes[right_model] = {"wins": 0, "losses": 0, "ties": 0}
+            
+            if winner == "tie":
+                model_votes[left_model]["ties"] += 1
+                model_votes[right_model]["ties"] += 1
+            elif winner == left_model:
+                model_votes[left_model]["wins"] += 1
+                model_votes[right_model]["losses"] += 1
+            elif winner == right_model:
+                model_votes[right_model]["wins"] += 1
+                model_votes[left_model]["losses"] += 1
+        
+        stats["model_performance"] = model_votes
+        ties_total = sum(1 for vote in votes if vote["vote"] == "tie")
+        stats["ties"] = ties_total
+        
+        return stats
+        
+    except Exception as e:
+        st.error(f"❌ Erreur statistiques Firebase : {str(e)}")
+        return {}
+
+# ==================== FONCTIONS API ====================
+
 def encode_pdf_to_base64(uploaded_file):
     """Encode un fichier PDF téléchargé en base64."""
     if uploaded_file is not None:
@@ -30,7 +222,6 @@ def encode_pdf_to_base64(uploaded_file):
         return base64_pdf
     return None
 
-# Fonction pour traiter une requête Claude
 def process_claude_query(model_name, messages, system_prompt, tools, api_key, max_tokens, temperature):
     """Traite une requête avec les modèles Claude."""
     try:
@@ -49,7 +240,6 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
         
         response_time = round(time.time() - start_time, 2)
         
-        # Extraire le contenu de la réponse
         content = ""
         sources = []
         
@@ -57,7 +247,6 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
             if block.type == "text":
                 content += block.text
         
-        # Extraire les citations des blocs de contenu
         for block in response.content:
             if hasattr(block, 'citations') and block.citations:
                 for citation in block.citations:
@@ -68,29 +257,24 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
                     }
                     sources.append(source_info)
         
-        # Récupérer les statistiques d'utilisation
         usage = response.usage
         input_tokens = usage.input_tokens if usage else 0
         output_tokens = usage.output_tokens if usage else 0
         web_search_requests = usage.server_tool_use.web_search_requests if usage and usage.server_tool_use else 0
         
-        # Calculer les coûts selon les vrais tarifs Anthropic
         try:
             if "haiku" in model_name.lower():
-                # Claude 3.5 Haiku : $0.80 input, $4 output par million
                 entry_cost = (int(input_tokens) / 1000000) * 0.8
                 output_cost = (int(output_tokens) / 1000000) * 4
             else:
-                # Claude 3.7 Sonnet : $3 input, $15 output par million  
                 entry_cost = (int(input_tokens) / 1000000) * 3
                 output_cost = (int(output_tokens) / 1000000) * 15
             
-            search_cost = (int(web_search_requests) / 1000) * 10  # 10$ par 1000 recherches web
+            search_cost = (int(web_search_requests) / 1000) * 10
             total_cost = entry_cost + output_cost + search_cost
         except:
             entry_cost = output_cost = search_cost = total_cost = 0
         
-        # Statistiques
         stats = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -110,7 +294,6 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
         error_msg = f"Erreur avec {model_name}: {str(e)}"
         return None, None, error_msg
 
-# Fonction pour préparer les messages Perplexity avec contexte limité
 def prepare_perplexity_messages(message_history, new_user_input):
     """Prépare les messages avec contexte limité aux 4 dernières interactions"""
     messages = [
@@ -120,18 +303,19 @@ def prepare_perplexity_messages(message_history, new_user_input):
         }
     ]
     
-    # Limiter aux 4 dernières interactions (= 8 derniers messages maximum)
     recent_history = message_history[-8:] if len(message_history) > 8 else message_history
     
-    # Ajouter l'historique récent
     for msg in recent_history:
         if msg["role"] in ["user", "assistant"]:
+            content = msg["content"]
+            if isinstance(content, list):
+                content = next((item.get("text", "") for item in content 
+                               if isinstance(item, dict) and item.get("type") == "text"), "")
             messages.append({
                 "role": msg["role"],
-                "content": msg["content"]
+                "content": content
             })
     
-    # Ajouter la nouvelle question
     messages.append({
         "role": "user",
         "content": new_user_input
@@ -139,12 +323,10 @@ def prepare_perplexity_messages(message_history, new_user_input):
     
     return messages
 
-# Fonction pour traiter une requête Perplexity
 async def process_perplexity_query(user_input, api_key, message_history=None):
     """Traite une requête avec Perplexity AI."""
     url = "https://api.perplexity.ai/chat/completions"
     
-    # Préparer les messages avec contexte limité
     messages = prepare_perplexity_messages(message_history or [], user_input)
     
     payload = {
@@ -153,7 +335,7 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
         "return_images": False,
         "return_related_questions": False,
         "top_k": 0,
-        "stream": False,  # Non-streaming pour simplifier
+        "stream": False,
         "presence_penalty": 0,
         "frequency_penalty": 1,
         "web_search_options": {"search_context_size": "high"},
@@ -184,28 +366,24 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
             data = response.json()
             response_time = round(time.time() - start_time, 2)
             
-            # Extraire le contenu
             content = data['choices'][0]['message']['content'] if 'choices' in data else ""
             
-            # Extraire les statistiques
             input_tokens = data.get('usage', {}).get('prompt_tokens', 0)
             output_tokens = data.get('usage', {}).get('completion_tokens', 0)
             citations = data.get('citations', [])
             
-            # Calculer les coûts Perplexity : $1 input, $1 output par million, $12 pour 1000 recherches
             try:
                 entry_cost = (int(input_tokens) / 1000000) * 1
                 output_cost = (int(output_tokens) / 1000000) * 1
-                search_cost = (1 / 1000) * 12  # $12 pour 1000 recherches = $0.012 par recherche
+                search_cost = (1 / 1000) * 12
                 total_cost = entry_cost + output_cost + search_cost
             except:
                 entry_cost = output_cost = search_cost = total_cost = 0
             
-            # Statistiques
             stats = {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
-                "web_searches": 1,  # Perplexity fait toujours une recherche
+                "web_searches": 1,
                 "response_time": response_time,
                 "model": "Perplexity Sonar",
                 "sources": [{"title": "Source Web", "url": "", "text": c} for c in citations],
@@ -220,7 +398,6 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
     except Exception as e:
         return None, None, f"Erreur Perplexity: {str(e)}"
 
-# Fonction pour traiter une requête selon le modèle
 async def process_model_query(model_name, prompt, message_history, anthropic_key, perplexity_key, max_tokens, temperature, pdf_data=None):
     """Traite une requête pour n'importe quel modèle"""
     
@@ -242,13 +419,15 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             ]
         }]
         
-        # Préparer les messages pour l'API
         api_messages = []
         for m in message_history:
             if m["role"] in ["user", "assistant"]:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+                content = m["content"]
+                if isinstance(content, list):
+                    content = next((item.get("text", "") for item in content 
+                                   if isinstance(item, dict) and item.get("type") == "text"), "")
+                api_messages.append({"role": m["role"], "content": content})
         
-        # Ajouter la nouvelle question
         if pdf_data:
             message_content = [
                 {"type": "text", "text": prompt},
@@ -294,13 +473,15 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             ]
         }]
         
-        # Préparer les messages pour l'API
         api_messages = []
         for m in message_history:
             if m["role"] in ["user", "assistant"]:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+                content = m["content"]
+                if isinstance(content, list):
+                    content = next((item.get("text", "") for item in content 
+                                   if isinstance(item, dict) and item.get("type") == "text"), "")
+                api_messages.append({"role": m["role"], "content": content})
         
-        # Ajouter la nouvelle question
         if pdf_data:
             message_content = [
                 {"type": "text", "text": prompt},
@@ -329,18 +510,116 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
         )
     
     elif model_name == "Perplexity AI":
-        # Préparer l'historique des messages (texte seulement)
         clean_history = []
         for m in message_history:
-            if isinstance(m["content"], str):
-                clean_history.append({"role": m["role"], "content": m["content"]})
+            content = m["content"]
+            if isinstance(content, list):
+                content = next((item.get("text", "") for item in content 
+                               if isinstance(item, dict) and item.get("type") == "text"), "")
+            if isinstance(content, str):
+                clean_history.append({"role": m["role"], "content": content})
         
         return await process_perplexity_query(prompt, perplexity_key, clean_history)
     
     else:
         return None, None, f"Modèle {model_name} non supporté"
 
-# Initialisation des variables de session
+# ==================== SYSTÈME DE VOTE ====================
+
+def init_voting_system():
+    """Initialise le système de vote dans session_state"""
+    if 'votes' not in st.session_state:
+        st.session_state.votes = {}
+    if 'vote_history' not in st.session_state:
+        st.session_state.vote_history = []
+    if 'firebase_enabled' not in st.session_state:
+        st.session_state.firebase_enabled = FIREBASE_AVAILABLE
+    if 'firebase_db' not in st.session_state:
+        st.session_state.firebase_db = None
+
+def create_exchange_id(question_index):
+    """Crée un ID unique pour un échange de questions/réponses"""
+    return f"exchange_{question_index}"
+
+def cast_vote(exchange_id, vote_choice, question, model_left, model_right):
+    """Enregistre un vote localement et dans Firebase"""
+    vote_data = {
+        "exchange_id": exchange_id,
+        "question": question,
+        "model_left": model_left,
+        "model_right": model_right,
+        "vote": vote_choice,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    st.session_state.votes[exchange_id] = vote_data
+    
+    if not any(v["exchange_id"] == exchange_id for v in st.session_state.vote_history):
+        st.session_state.vote_history.append(vote_data)
+    else:
+        for i, v in enumerate(st.session_state.vote_history):
+            if v["exchange_id"] == exchange_id:
+                st.session_state.vote_history[i] = vote_data
+                break
+    
+    if st.session_state.firebase_enabled and st.session_state.firebase_db:
+        success = save_vote_to_firebase(
+            st.session_state.firebase_db, 
+            exchange_id, 
+            vote_choice, 
+            question, 
+            model_left, 
+            model_right
+        )
+        if success:
+            st.success("✅ Vote sauvegardé dans Firebase")
+        else:
+            st.warning("⚠️ Vote sauvegardé localement seulement")
+
+def get_vote_stats(firebase_stats=False):
+    """Calcule les statistiques des votes (local ou Firebase)"""
+    if firebase_stats and st.session_state.firebase_db:
+        return get_firebase_stats(st.session_state.firebase_db)
+    
+    if not st.session_state.vote_history:
+        return {}
+    
+    stats = {
+        "total_votes": len(st.session_state.vote_history),
+        "model_performance": {}
+    }
+    
+    model_votes = {}
+    
+    for vote in st.session_state.vote_history:
+        left_model = vote["model_left"]
+        right_model = vote["model_right"]
+        winner = vote["vote"]
+        
+        if left_model not in model_votes:
+            model_votes[left_model] = {"wins": 0, "losses": 0, "ties": 0}
+        if right_model not in model_votes:
+            model_votes[right_model] = {"wins": 0, "losses": 0, "ties": 0}
+        
+        if winner == "tie":
+            model_votes[left_model]["ties"] += 1
+            model_votes[right_model]["ties"] += 1
+        elif winner == left_model:
+            model_votes[left_model]["wins"] += 1
+            model_votes[right_model]["losses"] += 1
+        elif winner == right_model:
+            model_votes[right_model]["wins"] += 1
+            model_votes[left_model]["losses"] += 1
+    
+    stats["model_performance"] = model_votes
+    
+    ties_total = sum(1 for vote in st.session_state.vote_history if vote["vote"] == "tie")
+    stats["ties"] = ties_total
+    
+    return stats
+
+# ==================== INITIALISATION ====================
+
 if 'messages_left' not in st.session_state:
     st.session_state.messages_left = []
 if 'messages_right' not in st.session_state:
@@ -348,10 +627,15 @@ if 'messages_right' not in st.session_state:
 if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
 
-# CSS personnalisé avec support dark mode
+init_voting_system()
+
+if FIREBASE_AVAILABLE and st.session_state.firebase_enabled:
+    if st.session_state.firebase_db is None:
+        st.session_state.firebase_db = init_firebase()
+
+# CSS personnalisé
 st.markdown("""
 <style>
-/* Variables CSS pour les couleurs */
 :root {
     --bg-primary: #ffffff;
     --bg-secondary: #f8f9fa;
@@ -360,16 +644,6 @@ st.markdown("""
     --shadow-color: rgba(0, 0, 0, 0.1);
 }
 
-/* Dark mode */
-[data-theme="dark"] {
-    --bg-primary: #1e1e1e;
-    --bg-secondary: #2d2d2d;
-    --text-primary: #ffffff;
-    --border-color: #404040;
-    --shadow-color: rgba(255, 255, 255, 0.1);
-}
-
-/* Détection automatique du dark mode */
 @media (prefers-color-scheme: dark) {
     :root {
         --bg-primary: #1e1e1e;
@@ -443,7 +717,6 @@ st.markdown("""
     border: 1px solid #f5c6cb;
 }
 
-/* Dark mode pour les erreurs */
 @media (prefers-color-scheme: dark) {
     .error-box {
         background-color: rgba(139, 0, 0, 0.3);
@@ -452,7 +725,6 @@ st.markdown("""
     }
 }
 
-/* Amélioration de la lisibilité des liens */
 .source-item a {
     color: #007bff;
     text-decoration: none;
@@ -468,7 +740,6 @@ st.markdown("""
     }
 }
 
-/* Espacement pour éviter les chevauchements */
 .response-container {
     margin-bottom: 20px;
     padding-bottom: 10px;
@@ -481,19 +752,34 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Titre de l'application
-st.title("Assistant Juridique Français - Comparaison Multi-Modèles 🇫🇷⚖️")
-st.subheader("Comparaison côte à côte des modèles IA")
+# ==================== INTERFACE PRINCIPALE ====================
 
-# Récupération des clés API depuis les variables d'environnement (.env)
+st.title("Assistant Juridique Français - Comparaison Multi-Modèles 🇫🇷⚖️")
+st.subheader("Comparaison côte à côte des modèles IA avec Firebase")
+
 anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 perplexity_key = os.getenv("PERPLEXITY_API_KEY", "")
 
-# Sidebar pour la configuration
 with st.sidebar:
     st.header("Configuration")
     
-    # Sélection des modèles pour chaque côté
+    st.subheader("🔥 Firebase")
+    if FIREBASE_AVAILABLE:
+        firebase_status = "🟢 Connecté" if st.session_state.firebase_db else "🔴 Non connecté"
+        st.write(f"**Statut :** {firebase_status}")
+        
+        if st.session_state.firebase_db:
+            st.write(f"**Session ID :** {get_session_id()[:8]}...")
+            
+            enable_firebase = st.checkbox("Activer Firebase", value=st.session_state.firebase_enabled)
+            if enable_firebase != st.session_state.firebase_enabled:
+                st.session_state.firebase_enabled = enable_firebase
+                st.rerun()
+        else:
+            st.error("Vérifiez vos credentials Firebase")
+    else:
+        st.error("Firebase non installé")
+    
     st.subheader("🤖 Choix des modèles")
     
     col_select1, col_select2 = st.columns(2)
@@ -508,30 +794,60 @@ with st.sidebar:
         model_right = st.selectbox(
             "Modèle Droit", 
             ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Perplexity AI"],
-            index=1,  # Par défaut Sonnet à droite
+            index=1,
             key="model_right"
         )
     
-    # Affichage des tarifs des modèles sélectionnés
-    st.subheader("💰 Tarifs des modèles sélectionnés")
+    vote_stats_local = get_vote_stats(firebase_stats=False)
+    vote_stats_global = get_vote_stats(firebase_stats=True)
     
-    def get_model_pricing(model_name):
-        if model_name == "Claude 3.5 Haiku":
-            return "$0.80 / $4.00 / $10 (Input/Output/1K recherches)"
-        elif model_name == "Claude 3.7 Sonnet":
-            return "$3.00 / $15.00 / $10 (Input/Output/1K recherches)"
-        else:  # Perplexity
-            return "$1.00 / $1.00 / $12 (Input/Output/1K recherches)"
+    if vote_stats_local or vote_stats_global:
+        st.subheader("🗳️ Statistiques des votes")
+        
+        tab_local, tab_global = st.tabs(["📱 Mes votes", "🌍 Global"])
+        
+        with tab_local:
+            if vote_stats_local:
+                st.metric("Total", vote_stats_local["total_votes"])
+                st.metric("Égalités", vote_stats_local["ties"])
+                
+                if vote_stats_local["model_performance"]:
+                    st.write("**🏆 Performance :**")
+                    for model, perf in vote_stats_local["model_performance"].items():
+                        total = perf["wins"] + perf["losses"] + perf["ties"]
+                        if total > 0:
+                            win_rate = (perf["wins"] / total) * 100
+                            st.write(f"**{model}:** {win_rate:.0f}% ({perf['wins']}/{total})")
+            else:
+                st.info("Aucun vote local")
+        
+        with tab_global:
+            if vote_stats_global and st.session_state.firebase_db:
+                st.metric("Total global", vote_stats_global["total_votes"])
+                st.metric("Égalités", vote_stats_global["ties"])
+                
+                if vote_stats_global["model_performance"]:
+                    st.write("**🏆 Performance globale :**")
+                    
+                    model_stats = []
+                    for model, perf in vote_stats_global["model_performance"].items():
+                        total = perf["wins"] + perf["losses"] + perf["ties"]
+                        if total > 0:
+                            win_rate = (perf["wins"] / total) * 100
+                            model_stats.append((model, win_rate, perf["wins"], total))
+                    
+                    model_stats.sort(key=lambda x: x[1], reverse=True)
+                    
+                    for i, (model, win_rate, wins, total) in enumerate(model_stats):
+                        medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "🏅"
+                        st.write(f"{medal} **{model}:** {win_rate:.0f}% ({wins}/{total})")
+            else:
+                st.info("Pas de données globales")
     
-    st.write(f"**Gauche ({model_left}):** {get_model_pricing(model_left)}")
-    st.write(f"**Droit ({model_right}):** {get_model_pricing(model_right)}")
-    
-    # Paramètres avancés
     st.subheader("Paramètres avancés")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
     max_tokens = st.slider("Tokens max", 500, 4000, 1500, 100)
     
-    # Téléchargement de document (seulement si au moins un Claude)
     if model_left != "Perplexity AI" or model_right != "Perplexity AI":
         st.subheader("Document de référence")
         uploaded_file = st.file_uploader("Télécharger un PDF", type=["pdf"], accept_multiple_files=True)
@@ -543,7 +859,6 @@ with st.sidebar:
         st.session_state.uploaded_file = None
         st.info("📄 Perplexity n'accepte pas les documents PDF")
     
-    # Statut des clés API
     st.subheader("🔑 Statut des clés API")
     if anthropic_key:
         st.success("✅ Clé Anthropic chargée depuis .env")
@@ -555,13 +870,13 @@ with st.sidebar:
     else:
         st.error("❌ Clé PERPLEXITY_API_KEY manquante dans .env")
     
-    # Debug
-    debug_mode = st.checkbox("Mode debug", value=False)
+    debug_mode = False
     
-    # Bouton reset
-    if st.button("🗑️ Vider l'historique"):
+    if st.button("🗑️ Vider l'historique local"):
         st.session_state.messages_left = []
         st.session_state.messages_right = []
+        st.session_state.votes = {}
+        st.session_state.vote_history = []
         st.rerun()
 
 # Vérification des clés API nécessaires
@@ -587,11 +902,9 @@ PERPLEXITY_API_KEY=votre_clé_perplexity
 """)
     st.stop()
 
-# Fonction pour afficher les messages avec style
 def display_messages(messages, model_name):
     for message in messages:
         with st.chat_message(message["role"]):
-            # Style selon le modèle utilisé
             if "haiku" in model_name.lower():
                 panel_class = "haiku-panel"
             elif "sonnet" in model_name.lower():
@@ -604,7 +917,6 @@ def display_messages(messages, model_name):
             st.markdown(f'<div class="model-panel {panel_class}">', unsafe_allow_html=True)
             
             if isinstance(message["content"], list):
-                # Message avec document
                 text_content = next((item.get("text", "") for item in message["content"] 
                                    if isinstance(item, dict) and item.get("type") == "text"), "")
                 st.markdown(f'<div class="response-container">{text_content}</div>', unsafe_allow_html=True)
@@ -613,7 +925,6 @@ def display_messages(messages, model_name):
             else:
                 st.markdown(f'<div class="response-container">{message["content"]}</div>', unsafe_allow_html=True)
             
-            # Afficher les statistiques si disponibles
             if message.get("stats"):
                 stats = message["stats"]
                 st.markdown(f"""
@@ -627,7 +938,6 @@ def display_messages(messages, model_name):
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Afficher les sources dans un conteneur séparé
                 if stats.get('sources'):
                     st.markdown('<div class="sources-container">', unsafe_allow_html=True)
                     sources_html = '<div class="sources-box"><h4>📚 Sources consultées:</h4>'
@@ -648,10 +958,37 @@ def display_messages(messages, model_name):
             
             st.markdown('</div>', unsafe_allow_html=True)
 
-# Créer deux colonnes pour la comparaison
+def display_vote_interface(exchange_id, question, model_left, model_right):
+    """Affiche l'interface de vote pour un échange donné"""
+    current_vote = st.session_state.votes.get(exchange_id)
+    
+    st.markdown("### 🗳️ Quelle réponse préférez-vous ?")
+    
+    col_vote1, col_vote2, col_vote3 = st.columns(3)
+    
+    with col_vote1:
+        if st.button(f"🥇 {model_left}", key=f"vote_left_{exchange_id}"):
+            cast_vote(exchange_id, model_left, question, model_left, model_right)
+            st.rerun()
+    
+    with col_vote2:
+        if st.button("⚖️ Égalité", key=f"vote_tie_{exchange_id}"):
+            cast_vote(exchange_id, "tie", question, model_left, model_right)
+            st.rerun()
+    
+    with col_vote3:
+        if st.button(f"🥇 {model_right}", key=f"vote_right_{exchange_id}"):
+            cast_vote(exchange_id, model_right, question, model_left, model_right)
+            st.rerun()
+    
+    if current_vote:
+        if current_vote["vote"] == "tie":
+            st.success("✅ Vous avez voté pour l'égalité")
+        else:
+            st.success(f"✅ Vous avez voté pour **{current_vote['vote']}**")
+
 col1, col2 = st.columns(2)
 
-# Affichage des historiques
 with col1:
     st.header(f"🔵 {model_left}")
     display_messages(st.session_state.messages_left, model_left)
@@ -660,11 +997,30 @@ with col2:
     st.header(f"🔴 {model_right}")
     display_messages(st.session_state.messages_right, model_right)
 
-# Zone de saisie
+def display_completed_votes():
+    """Affiche les interfaces de vote pour tous les échanges terminés"""
+    user_messages_left = [msg for msg in st.session_state.messages_left if msg["role"] == "user"]
+    assistant_messages_left = [msg for msg in st.session_state.messages_left if msg["role"] == "assistant"]
+    assistant_messages_right = [msg for msg in st.session_state.messages_right if msg["role"] == "assistant"]
+    
+    complete_exchanges = min(len(user_messages_left), len(assistant_messages_left), len(assistant_messages_right))
+    
+    for i in range(complete_exchanges):
+        exchange_id = create_exchange_id(i)
+        question_text = user_messages_left[i]["content"]
+        
+        if isinstance(question_text, list):
+            question_text = next((item.get("text", "") for item in question_text 
+                               if isinstance(item, dict) and item.get("type") == "text"), "Question avec document")
+        
+        display_question = question_text[:100] + "..." if len(question_text) > 100 else question_text
+        
+        with st.expander(f"🗳️ Vote pour l'échange {i+1}: {display_question}", expanded=False):
+            display_vote_interface(exchange_id, question_text, model_left, model_right)
+
 prompt = st.chat_input("Posez votre question juridique pour comparer les modèles...")
 
 if prompt:
-    # Préparer le contenu du message avec PDF si disponible
     pdf_data = None
     if st.session_state.uploaded_file is not None:
         pdf_data = encode_pdf_to_base64(st.session_state.uploaded_file)
@@ -684,7 +1040,6 @@ if prompt:
     else:
         message_content = prompt
     
-    # Ajouter la question aux deux historiques
     st.session_state.messages_left.append({
         "role": "user", 
         "content": message_content,
@@ -696,7 +1051,6 @@ if prompt:
         "model": model_right
     })
     
-    # Afficher la question utilisateur dans les deux colonnes
     with col1:
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -713,22 +1067,19 @@ if prompt:
             elif pdf_data and model_right == "Perplexity AI":
                 st.warning("⚠️ PDF ignoré (Perplexity ne le supporte pas)")
     
-    # Traitement parallèle des deux modèles
     async def process_both_models():
-        # Traitement pour le modèle de gauche
         with col1:
             with st.chat_message("assistant"):
                 with st.spinner(f"🤔 {model_left} réfléchit..."):
                     if debug_mode:
                         st.write(f"🔍 Debug: Envoi de la requête à {model_left}...")
                     
-                    # PDF seulement si pas Perplexity
                     pdf_for_left = pdf_data if model_left != "Perplexity AI" else None
                     
                     content_left, stats_left, error_left = await process_model_query(
                         model_left, 
                         prompt, 
-                        st.session_state.messages_left[:-1],  # Exclure la nouvelle question
+                        st.session_state.messages_left[:-1],
                         anthropic_key, 
                         perplexity_key, 
                         max_tokens, 
@@ -739,10 +1090,8 @@ if prompt:
                     if error_left:
                         st.markdown(f'<div class="error-box">❌ {error_left}</div>', unsafe_allow_html=True)
                     elif content_left:
-                        # Afficher la réponse dans un conteneur séparé
                         st.markdown(f'<div class="response-container">{content_left}</div>', unsafe_allow_html=True)
                         
-                        # Afficher les statistiques
                         if stats_left:
                             pdf_cost = 0
                             if pdf_for_left:
@@ -763,7 +1112,6 @@ if prompt:
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            # Afficher les sources dans un conteneur séparé et collapsible
                             if stats_left.get('sources'):
                                 with st.expander("📚 Sources consultées", expanded=False):
                                     st.markdown('<div class="sources-container">', unsafe_allow_html=True)
@@ -783,7 +1131,6 @@ if prompt:
                                     st.markdown(sources_html, unsafe_allow_html=True)
                                     st.markdown('</div>', unsafe_allow_html=True)
                         
-                        # Ajouter à l'historique
                         st.session_state.messages_left.append({
                             "role": "assistant", 
                             "content": content_left,
@@ -793,20 +1140,18 @@ if prompt:
                     else:
                         st.error(f"❌ Aucune réponse reçue de {model_left}")
         
-        # Traitement pour le modèle de droite
         with col2:
             with st.chat_message("assistant"):
                 with st.spinner(f"🤔 {model_right} réfléchit..."):
                     if debug_mode:
                         st.write(f"🔍 Debug: Envoi de la requête à {model_right}...")
                     
-                    # PDF seulement si pas Perplexity
                     pdf_for_right = pdf_data if model_right != "Perplexity AI" else None
                     
                     content_right, stats_right, error_right = await process_model_query(
                         model_right, 
                         prompt, 
-                        st.session_state.messages_right[:-1],  # Exclure la nouvelle question
+                        st.session_state.messages_right[:-1],
                         anthropic_key, 
                         perplexity_key, 
                         max_tokens, 
@@ -819,7 +1164,6 @@ if prompt:
                     elif content_right:
                         st.markdown(content_right)
                         
-                        # Afficher les statistiques
                         if stats_right:
                             pdf_cost = 0
                             if pdf_for_right:
@@ -840,7 +1184,6 @@ if prompt:
                             </div>
                             """, unsafe_allow_html=True)
                             
-                            # Afficher les sources
                             if stats_right.get('sources'):
                                 sources_html = '<div class="sources-box"><h4>📚 Sources consultées:</h4>'
                                 for i, source in enumerate(stats_right['sources']):
@@ -857,7 +1200,6 @@ if prompt:
                                 sources_html += '</div>'
                                 st.markdown(sources_html, unsafe_allow_html=True)
                         
-                        # Ajouter à l'historique
                         st.session_state.messages_right.append({
                             "role": "assistant", 
                             "content": content_right,
@@ -869,11 +1211,9 @@ if prompt:
         
         return stats_left, stats_right
     
-    # Exécuter le traitement parallèle
     try:
         stats_left, stats_right = asyncio.run(process_both_models())
         
-        # Afficher la comparaison des performances si les deux ont réussi
         if stats_left and stats_right:
             st.markdown("---")
             st.subheader("📊 Comparaison des performances")
@@ -912,7 +1252,6 @@ if prompt:
                     f"${cost_diff:+.6f} vs {model_right}"
                 )
             
-            # Afficher les coûts détaillés en mode debug
             if debug_mode:
                 st.subheader("💰 Détail des coûts")
                 col_cost1, col_cost2 = st.columns(2)
@@ -931,53 +1270,28 @@ if prompt:
                     st.write(f"• Recherches web: ${stats_right['search_cost']:.6f}")
                     st.write(f"**Total: ${stats_right['total_cost']:.6f}**")
                 
-                # Analyse comparative
                 if stats_left['total_cost'] > 0 and stats_right['total_cost'] > 0:
                     ratio = stats_right['total_cost'] / stats_left['total_cost']
                     if ratio > 1:
                         st.info(f"💡 {model_right} coûte {ratio:.1f}x plus cher que {model_left}")
                     else:
                         st.info(f"💡 {model_left} coûte {1/ratio:.1f}x plus cher que {model_right}")
-                
-                # Comparaison des sources en mode debug
-                if (stats_left.get('sources') or stats_right.get('sources')):
-                    st.subheader("🔍 Comparaison des sources")
-                    col_src1, col_src2 = st.columns(2)
-                    
-                    with col_src1:
-                        st.write(f"**Sources {model_left}:**")
-                        if stats_left.get('sources'):
-                            for i, source in enumerate(stats_left['sources']):
-                                with st.expander(f"Source {i+1}: {source.get('title', 'Sans titre')[:30]}..."):
-                                    st.write(f"**URL:** {source.get('url', 'Non disponible')}")
-                                    if source.get('text'):
-                                        st.write(f"**Extrait:** {source['text'][:300]}...")
-                        else:
-                            st.write("Aucune source trouvée")
-                    
-                    with col_src2:
-                        st.write(f"**Sources {model_right}:**")
-                        if stats_right.get('sources'):
-                            for i, source in enumerate(stats_right['sources']):
-                                with st.expander(f"Source {i+1}: {source.get('title', 'Sans titre')[:30]}..."):
-                                    st.write(f"**URL:** {source.get('url', 'Non disponible')}")
-                                    if source.get('text'):
-                                        st.write(f"**Extrait:** {source['text'][:300]}...")
-                        else:
-                            st.write("Aucune source trouvée")
     
     except Exception as e:
         st.error(f"Erreur lors du traitement parallèle: {str(e)}")
         if debug_mode:
             st.error(f"Debug - Erreur détaillée: {traceback.format_exc()}")
 
-# Footer
+if len(st.session_state.messages_left) > 1 and len(st.session_state.messages_right) > 1:
+    st.markdown("---")
+    st.header("🗳️ Votez pour les meilleures réponses")
+    display_completed_votes()
+
+
 st.markdown("---")
-st.markdown("""
+st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    <p>🤖 Assistant Juridique Français - Comparaison Multi-Modèles IA</p>
-    <p>⚠️ Les réponses fournies sont à titre informatif uniquement.</p>
-    <p>🔵 <strong>Gauche:</strong> {model_left} | 🔴 <strong>Droite:</strong> {model_right}</p>
-    <p>💡 <strong>Claude 3.5 Haiku:</strong> Rapide & économique | <strong>Claude 3.7 Sonnet:</strong> Avancé & précis | <strong>Perplexity AI:</strong> Recherche web native</p>
+    <p>{firebase_status}</p>
+    <p>🗳️ Vos votes sont sauvegardés {"dans Firebase" if st.session_state.firebase_enabled and st.session_state.firebase_db else "localement"}</p>
 </div>
-""".format(model_left=model_left, model_right=model_right), unsafe_allow_html=True)
+""", unsafe_allow_html=True)
