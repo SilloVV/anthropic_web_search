@@ -174,7 +174,13 @@ if FIREBASE_AVAILABLE:
             if not stats_df.empty:
                 # Styler le tableau
                 def highlight_leader(s):
-                    return ['background-color: #d4edda' if i == 0 else '' for i in range(len(s))]
+                    styles = []
+                    for i in range(len(s)):
+                        if i == 0:  # Premier rang (leader)
+                            styles.append('background-color: #28a745; color: black; font-weight: bold')
+                        else:
+                            styles.append('')
+                    return styles
                 
                 # Afficher le tableau avec style
                 styled_df = stats_df.style.apply(highlight_leader, axis=0)
