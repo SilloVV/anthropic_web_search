@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 import os
+import json
 from datetime import datetime
 
 # Firebase imports
@@ -35,15 +36,42 @@ def init_firebase():
         if firebase_admin._apps:
             return firestore.client()
         
+        # Méthode 1 : Fichier JSON (développement local)
         cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
-        project_id = os.getenv("FIREBASE_PROJECT_ID")
+        if cred_path and os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
         
-        if not cred_path or not os.path.exists(cred_path):
-            st.error(f"❌ Fichier credentials Firebase introuvable : {cred_path}")
-            return None
+        # Méthode 2 : Streamlit Secrets (Streamlit Cloud)
+        elif "firebase_credentials" in st.secrets:
+            firebase_config = json.loads(st.secrets["firebase_credentials"])
+            cred = credentials.Certificate(firebase_config)
         
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred, {'projectId': project_id})
+        # Méthode 3 : Variables d'environnement individuelles (Streamlit Cloud alternative)
+        else:
+            firebase_config = {
+                "type": "service_account",
+                "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+                "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+                "private_key": os.getenv("FIREBASE_PRIVATE_KEY", "").replace('\\n', '\n'),
+                "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+                "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_CERT_URL")
+            }
+            
+            # Vérifier que les variables essentielles sont présentes
+            if not all([firebase_config["project_id"], firebase_config["private_key"], firebase_config["client_email"]]):
+                st.error("❌ Variables Firebase manquantes. Vérifiez votre configuration.")
+                return None
+            
+            cred = credentials.Certificate(firebase_config)
+        
+        # Initialiser Firebase
+        firebase_admin.initialize_app(cred, {
+            'projectId': os.getenv("FIREBASE_PROJECT_ID") or json.loads(st.secrets.get("firebase_credentials", "{}")).get("project_id"),
+        })
         
         return firestore.client()
     
