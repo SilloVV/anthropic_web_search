@@ -12,6 +12,13 @@ from datetime import datetime
 import uuid
 import hashlib
 
+# Configuration de la page Streamlit - DOIT ÊTRE EN PREMIER
+st.set_page_config(
+    page_title="Assistant Juridique Français - Comparaison Multi-Modèles",
+    page_icon="⚖️",
+    layout="wide"
+)
+
 # Firebase imports
 try:
     import firebase_admin
@@ -23,13 +30,6 @@ except ImportError:
 
 # Chargement des variables d'environnement
 load_dotenv()
-
-# Configuration de la page Streamlit
-st.set_page_config(
-    page_title="Assistant Juridique Français - Comparaison Multi-Modèles",
-    page_icon="⚖️",
-    layout="wide"
-)
 
 # ==================== FIREBASE CONFIGURATION ====================
 
@@ -110,8 +110,8 @@ def create_question_hash(question):
     """Crée un hash unique pour une question"""
     return hashlib.md5(question.encode()).hexdigest()[:16]
 
-def save_vote_to_firebase(db, exchange_id, vote_choice, question, model_left, model_right):
-    """Sauvegarde un vote dans Firebase"""
+def save_vote_to_firebase(db, exchange_id, vote_choice, question, model_left, model_right, response_left=None, response_right=None, stats_left=None, stats_right=None):
+    """Sauvegarde un vote dans Firebase avec les réponses et métriques"""
     if not db:
         return False
     
@@ -129,6 +129,52 @@ def save_vote_to_firebase(db, exchange_id, vote_choice, question, model_left, mo
             "timestamp": firestore.SERVER_TIMESTAMP,
             "user_session_id": session_id
         }
+        
+        # Ajouter la réponse du modèle de gauche
+        if response_left:
+            vote_data["response_left"] = response_left[:2000]  # Limiter à 2000 caractères
+        
+        # Ajouter la réponse du modèle de droite  
+        if response_right:
+            vote_data["response_right"] = response_right[:2000]  # Limiter à 2000 caractères
+        
+        # Ajouter les métriques du modèle de gauche
+        if stats_left:
+            vote_data["stats_left"] = {
+                "response_time": stats_left.get("response_time", 0),
+                "total_cost": stats_left.get("total_cost", 0),
+                "input_tokens": stats_left.get("input_tokens", 0),
+                "output_tokens": stats_left.get("output_tokens", 0),
+                "web_searches": stats_left.get("web_searches", 0)
+            }
+        
+        # Ajouter les métriques du modèle de droite
+        if stats_right:
+            vote_data["stats_right"] = {
+                "response_time": stats_right.get("response_time", 0),
+                "total_cost": stats_right.get("total_cost", 0),
+                "input_tokens": stats_right.get("input_tokens", 0),
+                "output_tokens": stats_right.get("output_tokens", 0),
+                "web_searches": stats_right.get("web_searches", 0)
+            }
+        
+        # Calculer le coût total combiné
+        total_cost_combined = 0
+        if stats_left:
+            total_cost_combined += stats_left.get("total_cost", 0)
+        if stats_right:
+            total_cost_combined += stats_right.get("total_cost", 0)
+        
+        vote_data["total_cost_combined"] = total_cost_combined
+        
+        # Calculer le temps de réponse total
+        total_response_time = 0
+        if stats_left:
+            total_response_time += stats_left.get("response_time", 0)
+        if stats_right:
+            total_response_time += stats_right.get("response_time", 0)
+        
+        vote_data["total_response_time"] = total_response_time
         
         doc_id = f"{session_id}_{exchange_id}"
         db.collection('votes').document(doc_id).set(vote_data)
@@ -562,6 +608,32 @@ def cast_vote(exchange_id, vote_choice, question, model_left, model_right):
                 st.session_state.vote_history[i] = vote_data
                 break
     
+    # Récupérer les réponses et stats correspondantes
+    response_left = None
+    response_right = None
+    stats_left = None
+    stats_right = None
+    
+    # Extraire l'index de l'échange depuis l'exchange_id
+    try:
+        exchange_index = int(exchange_id.split('_')[1])
+        
+        # Récupérer les réponses des assistants
+        assistant_messages_left = [msg for msg in st.session_state.messages_left if msg["role"] == "assistant"]
+        assistant_messages_right = [msg for msg in st.session_state.messages_right if msg["role"] == "assistant"]
+        
+        if exchange_index < len(assistant_messages_left):
+            response_left = assistant_messages_left[exchange_index]["content"]
+            stats_left = assistant_messages_left[exchange_index].get("stats")
+        
+        if exchange_index < len(assistant_messages_right):
+            response_right = assistant_messages_right[exchange_index]["content"]
+            stats_right = assistant_messages_right[exchange_index].get("stats")
+            
+    except (ValueError, IndexError):
+        # Si on ne peut pas récupérer les données, on continue sans
+        pass
+    
     if st.session_state.firebase_enabled and st.session_state.firebase_db:
         success = save_vote_to_firebase(
             st.session_state.firebase_db, 
@@ -569,10 +641,14 @@ def cast_vote(exchange_id, vote_choice, question, model_left, model_right):
             vote_choice, 
             question, 
             model_left, 
-            model_right
+            model_right,
+            response_left,
+            response_right,
+            stats_left,
+            stats_right
         )
         if success:
-            st.success("✅ Vote sauvegardé dans Firebase")
+            st.success("✅ Vote et données sauvegardés dans Firebase")
         else:
             st.warning("⚠️ Vote sauvegardé localement seulement")
 
@@ -870,7 +946,7 @@ with st.sidebar:
     else:
         st.error("❌ Clé PERPLEXITY_API_KEY manquante dans .env")
     
-    debug_mode = False
+    debug_mode = st.checkbox("Mode debug", value=False)
     
     if st.button("🗑️ Vider l'historique local"):
         st.session_state.messages_left = []
@@ -1288,10 +1364,10 @@ if len(st.session_state.messages_left) > 1 and len(st.session_state.messages_rig
     display_completed_votes()
 
 
+
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
-    <p>{firebase_status}</p>
     <p>🗳️ Vos votes sont sauvegardés {"dans Firebase" if st.session_state.firebase_enabled and st.session_state.firebase_db else "localement"}</p>
 </div>
 """, unsafe_allow_html=True)
