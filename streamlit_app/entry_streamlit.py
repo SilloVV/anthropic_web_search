@@ -15,6 +15,8 @@ st.markdown(
 """
 )
 
+st.markdown("![Alt Text](https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExbHV3MGJ0OWlqcjR6dGt2ODR1ZGlncXk0MWpwMGJwMXY4MmU4dHJ0YSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/QAsHga1AB6dIGUsui6/giphy.gif)")
+
 
 st.markdown("""
 <style>
