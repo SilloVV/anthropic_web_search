@@ -1,4 +1,2 @@
 .env
 venv
-/streamlit_app/.env
-/streamlit_app/firebase

@@ -446,12 +446,17 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
 
 async def process_model_query(model_name, prompt, message_history, anthropic_key, perplexity_key, max_tokens, temperature, pdf_data=None):
     """Traite une requête pour n'importe quel modèle"""
+    # récupérer la date actuelle
+    date = time.strftime("%d/%m/%Y")
     
+
     if model_name == "Claude 3.5 Haiku":
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français et de manière précise.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
-        Cite tes sources de manière claire."""
+        Cite tes sources de manière claire.
+        Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024.
+        .""".format(date=date)
         
         tools = [{
             "type": "web_search_20250305",
@@ -505,7 +510,8 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français et de manière précise.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
-        Cite tes sources de manière claire."""
+        Cite tes sources de manière claire.Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024.
+        .""".format(date=date)
         
         tools = [{
             "type": "web_search_20250305",

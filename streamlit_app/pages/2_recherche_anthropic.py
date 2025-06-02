@@ -323,7 +323,7 @@ if prompt:
         },
         {
             "type": "text",
-            "text": "La date d'ajourd'hui est le {date}. Ce qui est après 2024. \n",
+            "text": "Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024. \n",
         },
         {
             "type": "text",
