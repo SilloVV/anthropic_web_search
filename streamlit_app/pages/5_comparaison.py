@@ -12,6 +12,13 @@ from datetime import datetime
 import uuid
 import hashlib
 
+# Import Gemini
+from google import genai
+import tempfile
+from pathlib import Path
+# Import supplémentaire pour les requêtes HTTP synchrones
+import requests
+
 # Configuration de la page Streamlit - DOIT ÊTRE EN PREMIER
 st.set_page_config(
     page_title="Assistant Juridique Français - Comparaison Multi-Modèles",
@@ -258,11 +265,11 @@ def get_firebase_stats(db):
 
 # ==================== FONCTIONS API ====================
 
-def encode_pdf_to_base64(uploaded_file):
-    """Encode un fichier PDF téléchargé en base64."""
-    if uploaded_file is not None:
+def encode_pdf_to_base64(uploaded_files):
+    """Encode un ou plusieurs fichiers PDF téléchargés en base64."""
+    if uploaded_files is not None and len(uploaded_files) > 0:
         base64_pdf = ""
-        for file in uploaded_file:
+        for file in uploaded_files:
             pdf_bytes = file.getvalue()
             base64_pdf += base64.b64encode(pdf_bytes).decode('utf-8')
         return base64_pdf
@@ -310,13 +317,16 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
         
         try:
             if "haiku" in model_name.lower():
-                entry_cost = (int(input_tokens) / 1000000) * 0.8
-                output_cost = (int(output_tokens) / 1000000) * 4
-            else:
-                entry_cost = (int(input_tokens) / 1000000) * 3
-                output_cost = (int(output_tokens) / 1000000) * 15
+                entry_cost = (int(input_tokens) / 1000000) * 0.8    # Vos tarifs Haiku
+                output_cost = (int(output_tokens) / 1000000) * 4.0  # Vos tarifs Haiku
+            elif "sonnet 4" in model_name.lower():
+                entry_cost = (int(input_tokens) / 1000000) * 3.0    # Estimation Sonnet 4
+                output_cost = (int(output_tokens) / 1000000) * 15.0 # Estimation Sonnet 4
+            else:  # Sonnet 3.7
+                entry_cost = (int(input_tokens) / 1000000) * 3.0    # Vos tarifs Sonnet 3.7
+                output_cost = (int(output_tokens) / 1000000) * 15.0 # Vos tarifs Sonnet 3.7
             
-            search_cost = (int(web_search_requests) / 1000) * 10
+            search_cost = (int(web_search_requests) / 1000) * 10    # Estimation web search Claude
             total_cost = entry_cost + output_cost + search_cost
         except:
             entry_cost = output_cost = search_cost = total_cost = 0
@@ -339,6 +349,359 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
     except Exception as e:
         error_msg = f"Erreur avec {model_name}: {str(e)}"
         return None, None, error_msg
+
+def process_gemini_query(prompt, message_history, gemini_key, max_tokens, temperature, pdf_data=None):
+    """Traite une requête avec Google Gemini 2.0 Flash et web search."""
+    try:
+        # Configuration de Gemini avec le nouveau SDK
+        client = genai.Client(api_key=gemini_key)
+        
+        start_time = time.time()
+        
+        # Préparer le contexte système pour le droit français
+        system_context = """Tu es un assistant IA français spécialisé dans le droit français. 
+        Tu réponds toujours en français et de manière précise.
+        Pour les questions juridiques, effectue une recherche web pour trouver les informations les plus récentes.
+        Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
+        Cite tes sources de manière claire avec les URLs.
+        Pour toute question relative à la date, la date d'aujourd'hui est le """ + time.strftime("%d/%m/%Y") + "."
+        
+        # Préparer l'historique de conversation (simplifié pour le nouveau SDK)
+        conversation_context = ""
+        for msg in message_history[-4:]:  # Limiter le contexte aux 4 derniers messages
+            if msg["role"] == "user":
+                content = msg["content"]
+                if isinstance(content, list):
+                    content = next((item.get("text", "") for item in content 
+                                   if isinstance(item, dict) and item.get("type") == "text"), "")
+                conversation_context += f"User: {content}\n"
+            elif msg["role"] == "assistant":
+                content = msg["content"]
+                if isinstance(content, str) and content:
+                    # Tronquer les réponses longues pour économiser les tokens
+                    truncated_content = content[:200] + "..." if len(content) > 200 else content
+                    conversation_context += f"Assistant: {truncated_content}\n"
+        
+        # Construire le prompt complet
+        full_prompt = f"{system_context}\n\n"
+        if conversation_context:
+            full_prompt += f"Contexte de conversation:\n{conversation_context}\n"
+        full_prompt += f"Nouvelle question: {prompt}"
+        
+        # Préparer les contenus pour la requête
+        contents = [full_prompt]
+        
+        # Gérer le PDF si présent (simplifié)
+        if pdf_data:
+            try:
+                # Créer un fichier temporaire
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                    # Décoder le base64
+                    pdf_bytes = base64.b64decode(pdf_data)
+                    temp_file.write(pdf_bytes)
+                    temp_path = temp_file.name
+                
+                # Pour le nouveau SDK, on ajoute une note sur le PDF
+                contents.append(f"[Document PDF joint - taille: {len(pdf_bytes)} bytes]")
+                
+                # Nettoyer le fichier temporaire
+                os.unlink(temp_path)
+                
+            except Exception as e:
+                print(f"Erreur traitement PDF: {e}")
+        
+        # Envoyer la requête avec le nouveau SDK
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=contents
+        )
+        
+        response_time = round(time.time() - start_time, 2)
+        
+        # Extraire le contenu
+        content = response.text if hasattr(response, 'text') and response.text else "Pas de réponse générée."
+        
+        # Estimer les recherches web (le nouveau SDK ne fournit pas toujours ces infos)
+        web_searches = 1 if any(url_indicator in content.lower() for url_indicator in ['http', 'www.', '.fr', '.com']) else 0
+        
+        # Estimation des tokens
+        input_tokens = len(full_prompt) // 4
+        output_tokens = len(content) // 4
+        
+        # Calculer les coûts pour Gemini 2.0 Flash (vos tarifs)
+        input_cost = (input_tokens / 1000000) * 0.1   # Vos tarifs : $0.1 per 1M input tokens
+        output_cost = (output_tokens / 1000000) * 0.4  # Vos tarifs : $0.4 per 1M output tokens
+        search_cost = web_searches * 0.005
+        
+        # Coût PDF (si présent)
+        pdf_cost = 0
+        if pdf_data:
+            pdf_size_mb = len(pdf_data) / (1024 * 1024)
+            pdf_cost = pdf_size_mb * 0.01
+        
+        total_cost = input_cost + output_cost + search_cost + pdf_cost
+        
+        # Extraire les sources basiques (le nouveau SDK gère différemment les citations)
+        sources = []
+        if hasattr(response, 'candidates') and response.candidates:
+            # Chercher les URLs dans le contenu pour créer des sources basiques
+            import re
+            urls = re.findall(r'https?://[^\s]+', content)
+            for i, url in enumerate(urls[:3]):  # Limiter à 3 sources
+                sources.append({
+                    "title": f"Source {i+1}",
+                    "url": url.rstrip('.,)'),
+                    "text": ""
+                })
+        
+        stats = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "web_searches": web_searches,
+            "response_time": response_time,
+            "model": "Google Gemini 2.0 Flash",
+            "sources": sources,
+            "entry_cost": input_cost,
+            "output_cost": output_cost,
+            "search_cost": search_cost,
+            "total_cost": total_cost
+        }
+        
+        return content, stats, None
+        
+    except Exception as e:
+        error_msg = f"Erreur avec Gemini: {str(e)}"
+        return None, None, error_msg
+
+def process_gemini_with_perplexity_query(prompt, message_history, gemini_key, perplexity_key, max_tokens, temperature, pdf_data=None):
+    """Traite une requête avec Google Gemini 2.0 Flash + Perplexity Search intégré."""
+    try:
+        # Configuration de Gemini avec le nouveau SDK (SANS web search natif)
+        client = genai.Client(api_key=gemini_key)
+        
+        start_time = time.time()
+        
+        # Préparer le contexte système spécialisé avec capacité de recherche
+        system_context = """Tu es un assistant IA français expert en droit français avec accès à la recherche web via Perplexity. 
+        Tu réponds toujours en français et de manière précise.
+        
+        IMPORTANT : Tu peux faire appel à une recherche Perplexity pour obtenir des informations récentes et précises.
+        Pour cela, utilise le format suivant quand tu as besoin d'informations complémentaires :
+        [SEARCH_QUERY: ta requête de recherche ici]
+        
+        Tu N'AS PAS d'accès direct au web - utilise UNIQUEMENT Perplexity via [SEARCH_QUERY: ...] pour les recherches.
+        Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
+        Cite tes sources de manière claire avec les URLs.
+        Pour toute question relative à la date, la date d'aujourd'hui est le """ + time.strftime("%d/%m/%Y") + "."
+        
+        # Préparer l'historique de conversation
+        conversation_context = ""
+        for msg in message_history[-4:]:
+            if msg["role"] == "user":
+                content = msg["content"]
+                if isinstance(content, list):
+                    content = next((item.get("text", "") for item in content 
+                                   if isinstance(item, dict) and item.get("type") == "text"), "")
+                conversation_context += f"User: {content}\n"
+            elif msg["role"] == "assistant":
+                content = msg["content"]
+                if isinstance(content, str) and content:
+                    truncated_content = content[:200] + "..." if len(content) > 200 else content
+                    conversation_context += f"Assistant: {truncated_content}\n"
+        
+        # Construire le prompt complet
+        full_prompt = f"{system_context}\n\n"
+        if conversation_context:
+            full_prompt += f"Contexte de conversation:\n{conversation_context}\n"
+        full_prompt += f"Nouvelle question: {prompt}"
+        
+        # Préparer les contenus pour la requête
+        contents = [full_prompt]
+        
+        # Gérer le PDF si présent
+        if pdf_data:
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                    pdf_bytes = base64.b64decode(pdf_data)
+                    temp_file.write(pdf_bytes)
+                    temp_path = temp_file.name
+                
+                contents.append(f"[Document PDF joint - taille: {len(pdf_bytes)} bytes]")
+                os.unlink(temp_path)
+                
+            except Exception as e:
+                print(f"Erreur traitement PDF: {e}")
+        
+        # Première réponse Gemini (SANS web search natif)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash-exp",
+            contents=contents
+        )
+        
+        initial_content = response.text if hasattr(response, 'text') and response.text else ""
+        
+        # Analyser si Gemini demande une recherche Perplexity
+        search_results = []
+        perplexity_cost = 0.0
+        final_content = initial_content
+        perplexity_searches = 0
+        
+        import re
+        search_queries = re.findall(r'\[SEARCH_QUERY:\s*([^\]]+)\]', initial_content)
+        
+        if search_queries and perplexity_key:
+            # Effectuer les recherches Perplexity UNIQUEMENT
+            for query in search_queries:
+                try:
+                    # Préparer la requête Perplexity
+                    url = "https://api.perplexity.ai/chat/completions"
+                    
+                    payload = {
+                        "temperature": 0.2,
+                        "top_p": 0.9,
+                        "return_images": False,
+                        "return_related_questions": False,
+                        "top_k": 0,
+                        "stream": False,
+                        "presence_penalty": 0,
+                        "frequency_penalty": 1,
+                        "web_search_options": {"search_context_size": "medium"},  # Medium pour optimiser coût/qualité
+                        "model": "sonar",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "Tu es un expert juridique français. Fournis des informations précises avec les sources."
+                            },
+                            {
+                                "role": "user",
+                                "content": query.strip()
+                            }
+                        ],
+                        "max_tokens": 2000,
+                        "search_domain_filter": [
+                            "www.legifrance.gouv.fr",
+                            "www.service-public.fr",
+                            "annuaire-entreprises.data.gouv.fr"
+                        ],
+                    }
+                    
+                    headers = {
+                        "Authorization": f"Bearer {perplexity_key}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    # Effectuer la recherche Perplexity
+                    search_response = requests.post(url, json=payload, headers=headers, timeout=30)
+                    
+                    if search_response.status_code == 200:
+                        search_data = search_response.json()
+                        search_content = search_data['choices'][0]['message']['content'] if 'choices' in search_data else ""
+                        
+                        # Calculer le coût Perplexity (vos tarifs)
+                        usage = search_data.get('usage', {})
+                        p_input_tokens = usage.get('prompt_tokens', 0)
+                        p_output_tokens = usage.get('completion_tokens', 0)
+                        search_cost = (p_input_tokens / 1000000) * 1.0 + (p_output_tokens / 1000000) * 1.0 + 0.008  # Vos tarifs $1/$1 + $8 per 1000
+                        perplexity_cost += search_cost
+                        perplexity_searches += 1
+                        
+                        search_results.append({
+                            "query": query.strip(),
+                            "content": search_content,
+                            "cost": search_cost
+                        })
+                        
+                except Exception as search_error:
+                    print(f"Erreur recherche Perplexity: {search_error}")
+                    search_results.append({
+                        "query": query.strip(),
+                        "content": f"Erreur lors de la recherche: {search_error}",
+                        "cost": 0
+                    })
+            
+            # Si des recherches ont été effectuées, demander à Gemini de synthétiser
+            if search_results:
+                search_context = "\n\n".join([
+                    f"Recherche: {result['query']}\nRésultats: {result['content']}" 
+                    for result in search_results
+                ])
+                
+                synthesis_prompt = f"""Voici les résultats de recherche Perplexity que tu avais demandés :
+
+{search_context}
+
+Maintenant, réponds à la question initiale en utilisant ces informations complémentaires : {prompt}
+
+Intègre naturellement ces informations dans ta réponse et cite les sources appropriées."""
+                
+                # Nouvelle requête à Gemini avec les résultats de recherche (SANS web search)
+                synthesis_response = client.models.generate_content(
+                    model="gemini-2.0-flash-exp",
+                    contents=[synthesis_prompt]
+                )
+                
+                final_content = synthesis_response.text if hasattr(synthesis_response, 'text') and synthesis_response.text else initial_content
+        
+        response_time = round(time.time() - start_time, 2)
+        
+        # Nettoyer le contenu final des marqueurs de recherche
+        final_content = re.sub(r'\[SEARCH_QUERY:\s*[^\]]+\]', '', final_content).strip()
+        
+        # Estimation des tokens
+        input_tokens = len(full_prompt) // 4
+        output_tokens = len(final_content) // 4
+        
+        # Calculer les coûts (UNIQUEMENT Gemini + Perplexity, vos tarifs)
+        gemini_input_cost = (input_tokens / 1000000) * 0.1    # Vos tarifs : $0.1 per 1M input
+        gemini_output_cost = (output_tokens / 1000000) * 0.4  # Vos tarifs : $0.4 per 1M output
+        gemini_search_cost = 0.0  # PAS de web search Gemini natif
+        
+        # Coût PDF
+        pdf_cost = 0
+        if pdf_data:
+            pdf_size_mb = len(pdf_data) / (1024 * 1024)
+            pdf_cost = pdf_size_mb * 0.01
+        
+        total_cost = gemini_input_cost + gemini_output_cost + gemini_search_cost + pdf_cost + perplexity_cost
+        
+        # Extraire les sources
+        sources = []
+        if search_results:
+            for i, result in enumerate(search_results):
+                sources.append({
+                    "title": f"Recherche Perplexity: {result['query'][:50]}...",
+                    "url": "",
+                    "text": result['content'][:200] + "..." if len(result['content']) > 200 else result['content']
+                })
+        
+        # Rechercher les URLs dans le contenu
+        urls = re.findall(r'https?://[^\s]+', final_content)
+        for i, url in enumerate(urls[:3]):
+            sources.append({
+                "title": f"Source {len(sources)+1}",
+                "url": url.rstrip('.,)'),
+                "text": ""
+            })
+        
+        stats = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "web_searches": perplexity_searches,  # UNIQUEMENT les recherches Perplexity
+            "response_time": response_time,
+            "model": "Google Gemini 2.0 Flash + Perplexity",
+            "sources": sources,
+            "entry_cost": gemini_input_cost,
+            "output_cost": gemini_output_cost,
+            "search_cost": perplexity_cost,  # UNIQUEMENT coût Perplexity
+            "total_cost": total_cost
+        }
+        
+        return final_content, stats, None
+        
+    except Exception as e:
+        error_msg = f"Erreur avec Gemini + Perplexity: {str(e)}"
+        return None, None, error_msg
+
 
 def prepare_perplexity_messages(message_history, new_user_input):
     """Prépare les messages avec contexte limité aux 4 dernières interactions"""
@@ -419,9 +782,9 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
             citations = data.get('citations', [])
             
             try:
-                entry_cost = (int(input_tokens) / 1000000) * 1
-                output_cost = (int(output_tokens) / 1000000) * 1
-                search_cost = (1 / 1000) * 12
+                entry_cost = (int(input_tokens) / 1000000) * 1.0   # Vos tarifs Perplexity Sonar
+                output_cost = (int(output_tokens) / 1000000) * 1.0 # Vos tarifs Perplexity Sonar  
+                search_cost = (1 / 1000) * 8.0                     # Vos tarifs : $8 per 1000 recherches
                 total_cost = entry_cost + output_cost + search_cost
             except:
                 entry_cost = output_cost = search_cost = total_cost = 0
@@ -444,7 +807,7 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
     except Exception as e:
         return None, None, f"Erreur Perplexity: {str(e)}"
 
-async def process_model_query(model_name, prompt, message_history, anthropic_key, perplexity_key, max_tokens, temperature, pdf_data=None):
+async def process_model_query(model_name, prompt, message_history, anthropic_key, perplexity_key, gemini_key, max_tokens, temperature, pdf_data=None):
     """Traite une requête pour n'importe quel modèle"""
     # récupérer la date actuelle
     date = time.strftime("%d/%m/%Y")
@@ -466,7 +829,8 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
                 "www.legifrance.gouv.fr",
                 "service-public.fr",
                 "www.conseil-constitutionnel.fr",
-                "www.conseil-etat.fr"
+                "www.conseil-etat.fr",
+                "juricaf.org"
             ]
         }]
         
@@ -560,6 +924,70 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             max_tokens,
             temperature
         )
+    
+    elif model_name == "Claude Sonnet 4":
+        system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
+        Tu réponds toujours en français et de manière précise.
+        Si il s'agit d'une question juridique, fais au moins une recherche internet.
+        Cite tes sources de manière claire.
+        Pour toute question relative à la date. La date d'aujourd'hui est le {date}.
+        """.format(date=date)
+        
+        tools = [{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 3,
+            "allowed_domains": [
+                "www.legifrance.gouv.fr",
+                "service-public.fr",
+                "www.conseil-constitutionnel.fr",
+                "www.conseil-etat.fr"
+            ]
+        }]
+        
+        api_messages = []
+        for m in message_history:
+            if m["role"] in ["user", "assistant"]:
+                content = m["content"]
+                if isinstance(content, list):
+                    content = next((item.get("text", "") for item in content 
+                                   if isinstance(item, dict) and item.get("type") == "text"), "")
+                api_messages.append({"role": m["role"], "content": content})
+        
+        if pdf_data:
+            message_content = [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "document", 
+                    "source": {
+                        "type": "base64", 
+                        "media_type": "application/pdf", 
+                        "data": pdf_data
+                    }
+                }
+            ]
+        else:
+            message_content = prompt
+            
+        api_messages.append({"role": "user", "content": message_content})
+        
+        return process_claude_query(
+            "claude-sonnet-4-20250514",
+            api_messages,
+            system_prompt,
+            tools,
+            anthropic_key,
+            max_tokens,
+            temperature
+        )
+    
+    elif model_name == "Google Gemini":
+        # Gemini 2.0 Flash avec web search intégré
+        return process_gemini_query(prompt, message_history, gemini_key, max_tokens, temperature, pdf_data)
+    
+    elif model_name == "Google Gemini 2.0 Flash + Perplexity":
+        # Gemini 2.0 Flash avec Perplexity Search intégré
+        return process_gemini_with_perplexity_query(prompt, message_history, gemini_key, perplexity_key, max_tokens, temperature, pdf_data)
     
     elif model_name == "Perplexity AI":
         clean_history = []
@@ -706,8 +1134,10 @@ if 'messages_left' not in st.session_state:
     st.session_state.messages_left = []
 if 'messages_right' not in st.session_state:
     st.session_state.messages_right = []
-if 'uploaded_file' not in st.session_state:
-    st.session_state.uploaded_file = None
+if 'model_left' not in st.session_state:
+    st.session_state.model_left = "Claude 3.5 Haiku"
+if 'model_right' not in st.session_state:
+    st.session_state.model_right = "Claude 3.7 Sonnet"
 
 init_voting_system()
 
@@ -758,6 +1188,26 @@ st.markdown("""
 .perplexity-panel {
     border-left: 4px solid #ff6b35;
     background-color: rgba(255, 107, 53, 0.1);
+}
+
+.gemini-panel {
+    border-left: 4px solid #4285f4;
+    background-color: rgba(66, 133, 244, 0.1);
+}
+
+.gemini-hybrid-panel {
+    border-left: 4px solid #34a853;
+    background-color: rgba(52, 168, 83, 0.1);
+}
+
+.sonnet4-panel {
+    border-left: 4px solid #8b5cf6;
+    background-color: rgba(139, 92, 246, 0.1);
+}
+
+.gemini-pro-panel {
+    border-left: 4px solid #f59e0b;
+    background-color: rgba(245, 158, 11, 0.1);
 }
 
 .stats-box {
@@ -831,6 +1281,19 @@ st.markdown("""
     margin-top: 15px;
     clear: both;
 }
+
+.model-selector {
+    background-color: var(--bg-secondary);
+    padding: 20px;
+    border-radius: 12px;
+    margin: 20px 0;
+    border: 2px solid var(--border-color);
+}
+
+.model-selector h3 {
+    margin-top: 0;
+    color: var(--text-primary);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -839,8 +1302,74 @@ st.markdown("""
 st.title("Assistant Juridique Français - Comparaison Multi-Modèles 🇫🇷⚖️")
 st.subheader("Comparaison côte à côte des modèles IA avec Firebase")
 
+# ==================== SÉLECTION DES MODÈLES SUR LA PAGE PRINCIPALE ====================
+
+st.markdown('<div class="model-selector">', unsafe_allow_html=True)
+st.markdown("### 🤖 Sélection des modèles à comparer")
+
+col_model1, col_model2 = st.columns(2)
+
+with col_model1:
+    model_left = st.selectbox(
+        "🔵 Modèle de gauche",
+        ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Claude Sonnet 4", "Google Gemini", "Google Gemini 2.0 Flash + Perplexity", "Perplexity AI"],
+        index=0,
+        key="main_model_left"
+    )
+    st.session_state.model_left = model_left
+
+with col_model2:
+    model_right = st.selectbox(
+        "🔴 Modèle de droite",
+        ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Claude Sonnet 4", "Google Gemini", "Google Gemini 2.0 Flash + Perplexity", "Perplexity AI"],
+        index=1,
+        key="main_model_right"
+    )
+    st.session_state.model_right = model_right
+
+if model_left == model_right:
+    st.warning("⚠️ Vous avez sélectionné le même modèle des deux côtés. Choisissez des modèles différents pour une comparaison pertinente.")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ==================== VÉRIFICATION DES CLÉS API ====================
+
 anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 perplexity_key = os.getenv("PERPLEXITY_API_KEY", "")
+gemini_key = os.getenv("GEMINI_API_KEY", "")
+
+# Vérification des clés API nécessaires
+keys_needed = set()
+if model_left.startswith("Claude") or model_right.startswith("Claude"):
+    keys_needed.add("anthropic")
+if model_left == "Google Gemini" or model_right == "Google Gemini":
+    keys_needed.add("gemini")
+if model_left == "Google Gemini 2.0 Flash + Perplexity" or model_right == "Google Gemini 2.0 Flash + Perplexity":
+    keys_needed.add("gemini")
+    keys_needed.add("perplexity")
+if model_left == "Perplexity AI" or model_right == "Perplexity AI":
+    keys_needed.add("perplexity")
+
+missing_keys = []
+if "anthropic" in keys_needed and not anthropic_key:
+    missing_keys.append("Anthropic")
+if "gemini" in keys_needed and not gemini_key:
+    missing_keys.append("Gemini")
+if "perplexity" in keys_needed and not perplexity_key:
+    missing_keys.append("Perplexity")
+
+if missing_keys:
+    st.error(f"❌ Clés API manquantes dans le fichier .env: {', '.join(missing_keys)}")
+    st.info("💡 Ajoutez vos clés dans le fichier .env :")
+    st.code("""
+# Fichier .env
+ANTHROPIC_API_KEY=votre_clé_anthropic
+PERPLEXITY_API_KEY=votre_clé_perplexity
+GEMINI_API_KEY=votre_clé_gemini
+""")
+    st.stop()
+
+# ==================== SIDEBAR POUR LA CONFIGURATION ====================
 
 with st.sidebar:
     st.header("Configuration")
@@ -862,23 +1391,9 @@ with st.sidebar:
     else:
         st.error("Firebase non installé")
     
-    st.subheader("🤖 Choix des modèles")
-    
-    col_select1, col_select2 = st.columns(2)
-    with col_select1:
-        model_left = st.selectbox(
-            "Modèle Gauche",
-            ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Perplexity AI"],
-            key="model_left"
-        )
-    
-    with col_select2:
-        model_right = st.selectbox(
-            "Modèle Droit", 
-            ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Perplexity AI"],
-            index=1,
-            key="model_right"
-        )
+    st.subheader("🤖 Modèles sélectionnés")
+    st.info(f"**Gauche :** {model_left}")
+    st.info(f"**Droite :** {model_right}")
     
     vote_stats_local = get_vote_stats(firebase_stats=False)
     vote_stats_global = get_vote_stats(firebase_stats=True)
@@ -928,18 +1443,7 @@ with st.sidebar:
     
     st.subheader("Paramètres avancés")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
-    max_tokens = st.slider("Tokens max", 500, 4000, 1500, 100)
-    
-    if model_left != "Perplexity AI" or model_right != "Perplexity AI":
-        st.subheader("Document de référence")
-        uploaded_file = st.file_uploader("Télécharger un PDF", type=["pdf"], accept_multiple_files=True)
-        
-        if uploaded_file is not None:
-            st.session_state.uploaded_file = uploaded_file
-            st.success(f"✅ {len(uploaded_file)} document(s) chargé(s)")
-    else:
-        st.session_state.uploaded_file = None
-        st.info("📄 Perplexity n'accepte pas les documents PDF")
+    max_tokens = st.slider("Tokens max", 500, 4000, 3500, 100)
     
     st.subheader("🔑 Statut des clés API")
     if anthropic_key:
@@ -952,6 +1456,11 @@ with st.sidebar:
     else:
         st.error("❌ Clé PERPLEXITY_API_KEY manquante dans .env")
     
+    if gemini_key:
+        st.success("✅ Clé Gemini chargée depuis .env")
+    else:
+        st.error("❌ Clé GEMINI_API_KEY manquante dans .env")
+    
     debug_mode = st.checkbox("Mode debug", value=False)
     
     if st.button("🗑️ Vider l'historique local"):
@@ -961,28 +1470,7 @@ with st.sidebar:
         st.session_state.vote_history = []
         st.rerun()
 
-# Vérification des clés API nécessaires
-keys_needed = set()
-if model_left.startswith("Claude") or model_right.startswith("Claude"):
-    keys_needed.add("anthropic")
-if model_left == "Perplexity AI" or model_right == "Perplexity AI":
-    keys_needed.add("perplexity")
-
-missing_keys = []
-if "anthropic" in keys_needed and not anthropic_key:
-    missing_keys.append("Anthropic")
-if "perplexity" in keys_needed and not perplexity_key:
-    missing_keys.append("Perplexity")
-
-if missing_keys:
-    st.error(f"❌ Clés API manquantes dans le fichier .env: {', '.join(missing_keys)}")
-    st.info("💡 Ajoutez vos clés dans le fichier .env :")
-    st.code("""
-# Fichier .env
-ANTHROPIC_API_KEY=votre_clé_anthropic
-PERPLEXITY_API_KEY=votre_clé_perplexity
-""")
-    st.stop()
+# ==================== FONCTIONS D'AFFICHAGE ====================
 
 def display_messages(messages, model_name):
     for message in messages:
@@ -993,20 +1481,39 @@ def display_messages(messages, model_name):
                 panel_class = "sonnet-panel"
             elif "perplexity" in model_name.lower():
                 panel_class = "perplexity-panel"
+            elif "gemini" in model_name.lower() and "perplexity" in model_name.lower():
+                panel_class = "gemini-hybrid-panel"
+            elif "gemini" in model_name.lower():
+                panel_class = "gemini-panel"
             else:
                 panel_class = "model-panel"
             
             st.markdown(f'<div class="model-panel {panel_class}">', unsafe_allow_html=True)
             
-            if isinstance(message["content"], list):
-                text_content = next((item.get("text", "") for item in message["content"] 
-                                   if isinstance(item, dict) and item.get("type") == "text"), "")
-                st.markdown(f'<div class="response-container">{text_content}</div>', unsafe_allow_html=True)
-                if any(item.get("type") == "document" for item in message["content"] if isinstance(item, dict)):
-                    st.info("📎 Document PDF joint")
-            else:
-                st.markdown(f'<div class="response-container">{message["content"]}</div>', unsafe_allow_html=True)
+            # Gestion du contenu du message
+            content_to_display = ""
+            has_pdf = False
             
+            if isinstance(message["content"], list):
+                # Extraire le texte du message
+                for item in message["content"]:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            content_to_display = item.get("text", "")
+                        elif item.get("type") == "document":
+                            has_pdf = True
+            else:
+                content_to_display = message["content"]
+            
+            # Afficher le contenu
+            if content_to_display:
+                st.markdown(f'<div class="response-container">{content_to_display}</div>', unsafe_allow_html=True)
+            
+            # Afficher l'indicateur PDF si présent
+            if has_pdf:
+                st.info("📎 Document PDF joint")
+            
+            # Afficher les statistiques si disponibles
             if message.get("stats"):
                 stats = message["stats"]
                 st.markdown(f"""
@@ -1069,16 +1576,6 @@ def display_vote_interface(exchange_id, question, model_left, model_right):
         else:
             st.success(f"✅ Vous avez voté pour **{current_vote['vote']}**")
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.header(f"🔵 {model_left}")
-    display_messages(st.session_state.messages_left, model_left)
-
-with col2:
-    st.header(f"🔴 {model_right}")
-    display_messages(st.session_state.messages_right, model_right)
-
 def display_completed_votes():
     """Affiche les interfaces de vote pour tous les échanges terminés"""
     user_messages_left = [msg for msg in st.session_state.messages_left if msg["role"] == "user"]
@@ -1089,66 +1586,135 @@ def display_completed_votes():
     
     for i in range(complete_exchanges):
         exchange_id = create_exchange_id(i)
-        question_text = user_messages_left[i]["content"]
+        question_content = user_messages_left[i]["content"]
         
-        if isinstance(question_text, list):
-            question_text = next((item.get("text", "") for item in question_text 
+        # Extraire le texte de la question
+        if isinstance(question_content, list):
+            question_text = next((item.get("text", "") for item in question_content 
                                if isinstance(item, dict) and item.get("type") == "text"), "Question avec document")
+        else:
+            question_text = question_content
         
         display_question = question_text[:100] + "..." if len(question_text) > 100 else question_text
         
         with st.expander(f"🗳️ Vote pour l'échange {i+1}: {display_question}", expanded=False):
             display_vote_interface(exchange_id, question_text, model_left, model_right)
 
-prompt = st.chat_input("Posez votre question juridique pour comparer les modèles...")
+# ==================== AFFICHAGE DES COLONNES DE COMPARAISON ====================
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.header(f"🔵 {model_left}")
+    display_messages(st.session_state.messages_left, model_left)
+
+with col2:
+    st.header(f"🔴 {model_right}")
+    display_messages(st.session_state.messages_right, model_right)
+
+# ==================== CHAT INPUT AVEC SUPPORT DES FICHIERS PDF ====================
+
+# Note sur l'incompatibilité avec Perplexity
+if model_left == "Perplexity AI" or model_right == "Perplexity AI":
+    st.info("📄 **Note :** Perplexity AI ne supporte pas les documents PDF. Les fichiers joints seront ignorés pour ce modèle.")
+
+# Chat input avec support des fichiers PDF
+prompt = st.chat_input(
+    "Posez votre question juridique et joignez éventuellement des PDFs...",
+    accept_file=True,
+    file_type=["pdf"]
+)
 
 if prompt:
-    pdf_data = None
-    if st.session_state.uploaded_file is not None:
-        pdf_data = encode_pdf_to_base64(st.session_state.uploaded_file)
+    # Extraire le texte et les fichiers du chat_input
+    if hasattr(prompt, 'text') and hasattr(prompt, 'files'):
+        # Nouveau format avec fichiers
+        user_text = prompt.text
+        uploaded_files = prompt.files if prompt.files else []
+    elif isinstance(prompt, str):
+        # Format texte simple (pas de fichiers)
+        user_text = prompt
+        uploaded_files = []
+    else:
+        # Fallback
+        user_text = str(prompt)
+        uploaded_files = []
     
-    if pdf_data:
-        message_content = [
-            {"type": "text", "text": prompt},
-            {
+    # Traiter les fichiers PDF
+    pdf_data = None
+    if uploaded_files and len(uploaded_files) > 0:
+        # Vérifier que tous les fichiers sont des PDF
+        pdf_files = [f for f in uploaded_files if f.type == "application/pdf"]
+        if pdf_files:
+            pdf_data = encode_pdf_to_base64(pdf_files)
+            st.success(f"✅ {len(pdf_files)} fichier(s) PDF traité(s)")
+        
+        if len(pdf_files) != len(uploaded_files):
+            st.warning("⚠️ Seuls les fichiers PDF sont supportés. Les autres fichiers ont été ignorés.")
+    
+    # Créer le contenu du message
+    if pdf_data and (model_left != "Perplexity AI" or model_right != "Perplexity AI"):
+        message_content_left = [
+            {"type": "text", "text": user_text}
+        ]
+        message_content_right = [
+            {"type": "text", "text": user_text}
+        ]
+        
+        # Ajouter le document seulement pour les modèles qui le supportent
+        if model_left != "Perplexity AI":
+            message_content_left.append({
                 "type": "document", 
                 "source": {
                     "type": "base64", 
                     "media_type": "application/pdf", 
                     "data": pdf_data
                 }
-            }
-        ]
+            })
+        
+        if model_right != "Perplexity AI":
+            message_content_right.append({
+                "type": "document", 
+                "source": {
+                    "type": "base64", 
+                    "media_type": "application/pdf", 
+                    "data": pdf_data
+                }
+            })
     else:
-        message_content = prompt
+        message_content_left = user_text
+        message_content_right = user_text
     
+    # Ajouter les messages à l'historique
     st.session_state.messages_left.append({
         "role": "user", 
-        "content": message_content,
+        "content": message_content_left,
         "model": model_left
     })
     st.session_state.messages_right.append({
         "role": "user", 
-        "content": message_content,
+        "content": message_content_right,
         "model": model_right
     })
     
+    # Afficher les messages utilisateur
     with col1:
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_text)
             if pdf_data and model_left != "Perplexity AI":
-                st.info("📎 Document PDF joint")
+                st.info(f"📎 {len(uploaded_files)} document(s) PDF joint(s)")
             elif pdf_data and model_left == "Perplexity AI":
                 st.warning("⚠️ PDF ignoré (Perplexity ne le supporte pas)")
     
     with col2:
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_text)
             if pdf_data and model_right != "Perplexity AI":
-                st.info("📎 Document PDF joint")
+                st.info(f"📎 {len(uploaded_files)} document(s) PDF joint(s)")
             elif pdf_data and model_right == "Perplexity AI":
                 st.warning("⚠️ PDF ignoré (Perplexity ne le supporte pas)")
     
+    # Traiter les réponses des modèles
     async def process_both_models():
         with col1:
             with st.chat_message("assistant"):
@@ -1160,10 +1726,11 @@ if prompt:
                     
                     content_left, stats_left, error_left = await process_model_query(
                         model_left, 
-                        prompt, 
+                        user_text, 
                         st.session_state.messages_left[:-1],
                         anthropic_key, 
-                        perplexity_key, 
+                        perplexity_key,
+                        gemini_key,
                         max_tokens, 
                         temperature,
                         pdf_for_left
@@ -1232,10 +1799,11 @@ if prompt:
                     
                     content_right, stats_right, error_right = await process_model_query(
                         model_right, 
-                        prompt, 
+                        user_text, 
                         st.session_state.messages_right[:-1],
                         anthropic_key, 
-                        perplexity_key, 
+                        perplexity_key,
+                        gemini_key,
                         max_tokens, 
                         temperature,
                         pdf_for_right
@@ -1293,9 +1861,11 @@ if prompt:
         
         return stats_left, stats_right
     
+    # Exécuter le traitement des deux modèles
     try:
         stats_left, stats_right = asyncio.run(process_both_models())
         
+        # Afficher la comparaison des performances
         if stats_left and stats_right:
             st.markdown("---")
             st.subheader("📊 Comparaison des performances")
@@ -1364,16 +1934,20 @@ if prompt:
         if debug_mode:
             st.error(f"Debug - Erreur détaillée: {traceback.format_exc()}")
 
+# ==================== SECTION DE VOTE ====================
+
 if len(st.session_state.messages_left) > 1 and len(st.session_state.messages_right) > 1:
     st.markdown("---")
     st.header("🗳️ Votez pour les meilleures réponses")
     display_completed_votes()
 
-
+# ==================== FOOTER ====================
 
 st.markdown("---")
 st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
     <p>🗳️ Vos votes sont sauvegardés {"dans Firebase" if st.session_state.firebase_enabled and st.session_state.firebase_db else "localement"}</p>
+    <p>📎 Glissez-déposez vos fichiers PDF directement dans la zone de chat</p>
+    <p>🤖 Modèles disponibles : Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude Sonnet 4, Google Gemini 2.0 Flash, Google Gemini 2.0 Flash + Perplexity, Perplexity AI</p>
 </div>
 """, unsafe_allow_html=True)

@@ -135,7 +135,6 @@ st.markdown("""
 <style>
 .stApp {
     max-width: 1200px;
-    margin: 0 auto;
 }
 
 /* Style pour le bloc de recherche avec fond gris et opacité */
