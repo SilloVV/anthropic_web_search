@@ -219,7 +219,7 @@ with st.sidebar:
     # Paramètres avancés
     st.subheader("Paramètres avancés")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.1)
-    max_tokens = st.slider("Tokens max en sortie", 500, 4000, 3000, 100)
+    max_tokens = st.slider("Tokens max en sortie", 500, 7000, 3000, 100)
     max_searches = st.slider("Nombre max de recherches web", 1, 5, 3, 1)
     
     # Domaines autorisés
