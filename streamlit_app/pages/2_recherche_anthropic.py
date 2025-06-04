@@ -128,7 +128,7 @@ if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
 
 # Titre de l'application
-st.title("Assistant Juridique Français 🇫🇷⚖️")
+st.title("Assistant Juridique Français Anthropic 🇫🇷⚖️")
 
 # Ajouter du CSS personnalisé dès le début pour s'assurer qu'il est toujours appliqué
 st.markdown("""
@@ -213,13 +213,13 @@ with st.sidebar:
     # Sélection du modèle
     model = st.selectbox(
         "Modèle Claude",
-        ["claude-3-5-haiku-latest"]
+        ["claude-3-7-sonnet-latest","claude-3-5-haiku-latest", "claude-4-0-sonnet"]
     )
     
     # Paramètres avancés
     st.subheader("Paramètres avancés")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-    max_tokens = st.slider("Tokens max en sortie", 500, 4000, 1500, 100)
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.1)
+    max_tokens = st.slider("Tokens max en sortie", 500, 4000, 3000, 100)
     max_searches = st.slider("Nombre max de recherches web", 1, 5, 3, 1)
     
     # Domaines autorisés
@@ -318,45 +318,60 @@ if prompt:
     system = [
         {
             "type": "text",
-            "text": "Tu es un assistant IA Français spécialisé dans le domaine du droit français.Qui répond toujours en français.\n",
-        },
-        {
-            "type": "text",
-            "text": "Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024. \n",
-        },
-        {
-            "type": "text",
-            "text": "n Lorsque la source est précise, il n'est pas nécéssaire d'ajouter des mots clés en plus dans tes recherches\n",
+            "text": "Tu es un assistant IA Français spécialisé dans le domaine du droit français qui répond toujours en français.\n",
         },
         
         {
             "type": "text",
-            "text": "Si il s'agit d'une question juridique ou d'une nalyse de document, fais toujours au moins une recherche internet.\n",
+            "text": "Tu peux effectuer des recherches sur le web pour trouver des informations juridiques pertinentes.\n",
         },
         {
             "type": "text",
-            "text": "Tu es capable de répondre à des questions juridiques et de fournir des conseils sur des sujets liés au droit français en citant des références en droit français.\n",
+            "text": "Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'aujourd'hui est le {date} ce qui est après la date de tes recherches.. \n",
+        },
+                {
+            "type": "text",
+            "text": "n Lorsque la source est précise, il n'est pas nécéssaire d'ajouter des mots clés en plus dans tes recherches\n",
         },
         {
             "type": "text",
-            "text": "Tu peux également effectuer des recherches sur le web pour trouver des informations juridiques pertinentes.\n",
+            "text": "Si il s'agit d'une question concernant une source écrite de droit, fais toujours au moins une recherche internet et répond sous cette structure :\n",
+        },
+
+        {
+            "type": "text",
+            "text": "Commence par écrire le Titre de la source écrite. Définis ensuite le cadre légal de la source relativement à la question. Fais ensuite une synthèse concise générale de la source écrite. Enfin fais une analyse approfondie étape par étape en ajoutant les référence à la fin de chaque paragraphe sous la forme [numéro de référence] de celle ci.\n",
         },
         {
             "type": "text",
-            "text": "Important : Pour toutes tes réponses nécessitant des sources externes : Utilise systématiquement le format de citation suivant :<titre>Titre complet de la source</titre> <url>Lien exact vers la source</url><extrait>Extrait pertinent et concis de la source (limité à 2-3 phrases clés)</extrait> \n ",
+            "text": " Pose une question afférente au sujet à l'utilisateur.\n",
         },
         {
             "type": "text",
-            "text": "Tu dois toujours respecter la vie privée et la confidentialité des utilisateurs.\n",
+            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
         },
         {
             "type": "text",
-            "text": "Retourne les sources pertinentes sous forme d'une liste avec titre et url.\n",
+            "text": "Premièrement, Planifie la réponse sous la forme d'un plan. Ensuite, définit le cadre légal relatif à la question ou au domaine d'application du droit. Fais ensuite une synthèse concise de la réponse pointant sur les différentes partie de la future analyse approfondie. Fais ensuite une analyse approfondie. \n",
         },
         {
             "type": "text",
-            "text": "Si un document PDF est joint à la question, analyse son contenu et base-toi dessus pour ta réponse.\n",
+            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
         },
+        
+        {
+            "type": "text",
+            "text": "Si il s'agit d'une analyse de document, fais toujours au moins une recherche internet.\n",
+        },
+
+        {
+            "type": "text",
+            "text": "Ajoute les références utilisées à la fin de ton paragraphe sous la forme [numéro de reference]\n ",
+        },
+        {
+            "type": "text",
+            "text": "Enfin, Retourne les sources pertinentes sous forme d'une liste numerotées avec titre et url.\n",
+        }
     ]
     
     # Créer la liste des messages pour la requête
@@ -606,8 +621,8 @@ if prompt:
                 
                 # Afficher les statistiques d'utilisation
                 try:
-                    entry_cost = (int(input_tokens) / 1000000) * 0.8
-                    output_cost = (int(output_tokens) / 1000000) * 4
+                    entry_cost = (int(input_tokens) / 1000000) * 3
+                    output_cost = (int(output_tokens) / 1000000) * 15
                     search_cost = (int(web_search_requests) / 1000) * 10
                     total_cost = entry_cost + output_cost + search_cost
                 except:
@@ -695,26 +710,26 @@ if prompt:
                 final_html += f"<div>{complete_response_text}</div>"
                 
                 # Ajouter les citations si elles existent
-                if citations:
-                    citations_html = """
-                    <div class="citations-block">
-                    <h4>📚 Sources consultées:</h4>
-                    """
-                    for i, citation in enumerate(citations):
-                        title = citation.get("title", "Sans titre")
-                        url = citation.get("url", "")
-                        text = citation.get("text", "")
+                # if citations:
+                #     citations_html = """
+                #     <div class="citations-block">
+                #     <h4>📚 Sources consultées:</h4>
+                #     """
+                #     for i, citation in enumerate(citations):
+                #         title = citation.get("title", "Sans titre")
+                #         url = citation.get("url", "")
+                #         text = citation.get("text", "")
                         
-                        citations_html += f"<p><strong>Source {i+1}:</strong> {title}</p>"
-                        if url:
-                            citations_html += f"<p>URL: {url}</p>"
-                        if text:
-                            # Limiter la longueur du texte cité
-                            if len(text) > 150:
-                                text = text[:150] + "..."
-                            citations_html += f"<p>Extrait: \"{text}\"</p>"
-                    citations_html += "</div>"
-                    final_html += citations_html
+                #         citations_html += f"<p><strong>Source {i+1}:</strong> {title}</p>"
+                #         if url:
+                #             citations_html += f"<p>URL: {url}</p>"
+                #         if text:
+                #             # Limiter la longueur du texte cité
+                #             if len(text) > 150:
+                #                 text = text[:150] + "..."
+                #             citations_html += f"<p>Extrait: \"{text}\"</p>"
+                #     citations_html += "</div>"
+                #     final_html += citations_html
                 
                 # Ajouter la réponse à l'historique (avec les recherches et citations incluses)
                 st.session_state.messages.append({"role": "assistant", "content": final_html})
