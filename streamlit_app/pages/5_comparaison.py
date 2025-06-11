@@ -360,7 +360,7 @@ def process_gemini_query(prompt, message_history, gemini_key, max_tokens, temper
         
         # Préparer le contexte système pour le droit français
         system_context = """Tu es un assistant IA français spécialisé dans le droit français. 
-        Tu réponds toujours en français et de manière précise.
+        Tu réponds toujours en français et de manière précise et détaillée.
         Pour les questions juridiques, effectue une recherche web pour trouver les informations les plus récentes.
         Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
         Cite tes sources de manière claire avec les URLs.
@@ -485,13 +485,15 @@ def process_gemini_with_perplexity_query(prompt, message_history, gemini_key, pe
         system_context = """Tu es un assistant IA français expert en droit français avec accès à la recherche web via Perplexity. 
         Tu réponds toujours en français et de manière précise.
         
+        TU dois répondre de manière structurée et très détaillée.s
+        
         IMPORTANT : Tu peux faire appel à une recherche Perplexity pour obtenir des informations récentes et précises.
         Pour cela, utilise le format suivant quand tu as besoin d'informations complémentaires :
         [SEARCH_QUERY: ta requête de recherche ici]
         
         Tu N'AS PAS d'accès direct au web - utilise UNIQUEMENT Perplexity via [SEARCH_QUERY: ...] pour les recherches.
         Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
-        Cite tes sources de manière claire avec les URLs.
+        Cite tes sources de manière claire.
         Pour toute question relative à la date, la date d'aujourd'hui est le """ + time.strftime("%d/%m/%Y") + "."
         
         # Préparer l'historique de conversation
@@ -566,11 +568,11 @@ def process_gemini_with_perplexity_query(prompt, message_history, gemini_key, pe
                         "presence_penalty": 0,
                         "frequency_penalty": 1,
                         "web_search_options": {"search_context_size": "medium"},  # Medium pour optimiser coût/qualité
-                        "model": "sonar",
+                        "model": "sonar-pro",
                         "messages": [
                             {
                                 "role": "system",
-                                "content": "Tu es un expert juridique français. Fournis des informations précises avec les sources."
+                                "content": "Tu es un expert juridique français. Fournis des informations précises avec les sources de la façon la plus détaillée possible."
                             },
                             {
                                 "role": "user",
@@ -748,7 +750,7 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
         "presence_penalty": 0,
         "frequency_penalty": 1,
         "web_search_options": {"search_context_size": "high"},
-        "model": "sonar",
+        "model": "sonar-pro",
         "messages": messages,
         "max_tokens": 4000,
         "search_domain_filter": [
@@ -782,8 +784,8 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
             citations = data.get('citations', [])
             
             try:
-                entry_cost = (int(input_tokens) / 1000000) * 1.0   # Vos tarifs Perplexity Sonar
-                output_cost = (int(output_tokens) / 1000000) * 1.0 # Vos tarifs Perplexity Sonar  
+                entry_cost = (int(input_tokens) / 1000000) * 3.0   # Vos tarifs Perplexity Sonar
+                output_cost = (int(output_tokens) / 1000000) * 15.0 # Vos tarifs Perplexity Sonar  
                 search_cost = (1 / 1000) * 8.0                     # Vos tarifs : $8 per 1000 recherches
                 total_cost = entry_cost + output_cost + search_cost
             except:
@@ -794,7 +796,7 @@ async def process_perplexity_query(user_input, api_key, message_history=None):
                 "output_tokens": output_tokens,
                 "web_searches": 1,
                 "response_time": response_time,
-                "model": "Perplexity Sonar",
+                "model": "Perplexity Sonar Pro",
                 "sources": [{"title": "Source Web", "url": "", "text": c} for c in citations],
                 "entry_cost": entry_cost,
                 "output_cost": output_cost,
@@ -872,9 +874,9 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
     
     elif model_name == "Claude 3.7 Sonnet":
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
-        Tu réponds toujours en français et de manière précise.
+        Tu réponds toujours en français, de manière structurée et très détaillée.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
-        Cite tes sources de manière claire.Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024.
+        Cite tes sources de manière claire.Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'ajourd'hui est le {date}. Ce qui est après Novembre 2024 .
         .""".format(date=date)
         
         tools = [{

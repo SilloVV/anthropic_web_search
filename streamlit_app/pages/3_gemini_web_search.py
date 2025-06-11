@@ -43,6 +43,7 @@ def process_gemini_query(prompt, message_history, gemini_key, max_tokens, temper
         # Préparer le contexte système pour le droit français
         system_context = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français et de manière précise.
+        Si une date est mentionnée, vérifie SYSTÉMATIQUEMENT si elle est dans le futur avec l'outil `is_date_in_future`.
         Pour les questions juridiques, effectue une recherche web pour trouver les informations les plus récentes.
         Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
         Cite tes sources de manière claire avec les URLs.

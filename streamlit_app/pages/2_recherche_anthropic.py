@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import os
 import json
 import base64
+import datetime
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -96,6 +97,63 @@ def handle_search_error(query_parts):
         
     return False, None
 
+# --- Définition des Outils Côté Client ---
+def is_date_in_future(date_str: str) -> bool:
+    """Vérifie si une date (au format YYYY-MM-DD) est strictement dans le futur."""
+    try:
+        target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        raise ValueError("Le format de la date doit être 'YYYY-MM-DD' et de type string.")
+    today = datetime.datetime.now().date()
+    return target_date > today
+
+def execute_local_tool(tool_name: str, tool_input: dict):
+    """
+    Exécute un outil local et retourne le résultat.
+    
+    Args:
+        tool_name (str): Le nom de l'outil à exécuter
+        tool_input (dict): Les paramètres d'entrée de l'outil
+        
+    Returns:
+        dict: Le résultat de l'exécution de l'outil
+    """
+    try:
+        if tool_name == "is_date_in_future":
+            date_str = tool_input.get("date_str")
+            if not date_str:
+                return {"error": "Paramètre 'date_str' manquant"}
+            
+            result = is_date_in_future(date_str)
+            return {
+                "result": result,
+                "message": f"La date {date_str} est {"dans le futur" if result else "dans le passé ou aujourd'hui"}"
+            }
+        else:
+            return {"error": f"Outil '{tool_name}' non reconnu"}
+    
+    except Exception as e:
+        return {"error": f"Erreur lors de l'exécution de l'outil: {str(e)}"}
+
+# --- Définition du Schéma des Outils pour l'API ---
+tools_schema = [
+    {"type": "web_search_20250305", "name": "web_search"},
+    {
+        "name": "is_date_in_future", 
+        "description": "Compare une date (YYYY-MM-DD) avec la date actuelle. Retourne True si la date est dans le futur, sinon False.", 
+        "input_schema": {
+            "type": "object", 
+            "properties": {
+                "date_str": {
+                    "type": "string", 
+                    "description": "La date à comparer au format YYYY-MM-DD."
+                }
+            }, 
+            "required": ["date_str"]
+        }
+    }
+]
+
 # Fonction pour extraire les citations du contenu
 def extract_citations_from_blocks(content_blocks):
     """Extrait les citations des blocs de contenu"""
@@ -126,6 +184,8 @@ if 'search_errors' not in st.session_state:
     st.session_state.search_errors = []
 if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
+if 'tool_executions' not in st.session_state:
+    st.session_state.tool_executions = []
 
 # Titre de l'application
 st.title("Assistant Juridique Français Anthropic 🇫🇷⚖️")
@@ -147,6 +207,21 @@ div.search-block {
 
 div.search-block h4 {
     color: #0077b6;
+    margin-top: 0;
+    margin-bottom: 8px;
+}
+
+/* Style pour les outils */
+div.tools-block {
+    background-color: rgba(255, 248, 220, 0.85);
+    border-radius: 8px;
+    padding: 12px 15px;
+    margin-bottom: 16px;
+    border-left: 3px solid #ffa500;
+}
+
+div.tools-block h4 {
+    color: #ff8c00;
     margin-top: 0;
     margin-bottom: 8px;
 }
@@ -213,7 +288,7 @@ with st.sidebar:
     # Sélection du modèle
     model = st.selectbox(
         "Modèle Claude",
-        ["claude-3-7-sonnet-latest","claude-3-5-haiku-latest", "claude-4-0-sonnet"]
+        ["claude-3-5-sonnet-latest","claude-3-5-haiku-latest", "claude-4-0-sonnet"]
     )
     
     # Paramètres avancés
@@ -248,7 +323,10 @@ with st.sidebar:
         pdf_display = f'<iframe src="data:application/pdf;base64,{encode_pdf_to_base64(uploaded_file)}" width="100%" height="200" type="application/pdf"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
     
-   
+    # Information sur les outils disponibles
+    st.subheader("Outils disponibles")
+    st.write("🔍 Recherche web")
+    st.write("📅 Vérification de date future")
     
     # Debug mode
     debug_mode = st.checkbox("Mode débogage", value=False)
@@ -312,7 +390,7 @@ if prompt:
             st.markdown(prompt)
     
     # récupérer la date actuelle
-    date = time.strftime("%d/%m/%Y")
+    current_date = time.strftime("%d/%m/%Y")
 
     # Préparer le système prompt
     system = [
@@ -327,50 +405,44 @@ if prompt:
         },
         {
             "type": "text",
-            "text": "Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'aujourd'hui est le {date} ce qui est après la date de tes recherches.. \n",
-        },
-                {
-            "type": "text",
-            "text": "n Lorsque la source est précise, il n'est pas nécéssaire d'ajouter des mots clés en plus dans tes recherches\n",
+            "text": f"GESTION DES DATES ET DÉLAIS JURIDIQUES :\nLa date d'aujourd'hui est le {current_date}. Tu as accès à un outil spécialisé 'is_date_in_future' pour vérifier si une date est dans le futur.\n\nUtilise systématiquement cet outil quand :\n- L'utilisateur mentionne une date spécifique (échéance, délai, prescription)\n- Tu dois analyser si un délai juridique est encore en cours\n- Il faut vérifier la validité temporelle d'une action juridique\n- L'utilisateur demande si une date limite est dépassée\n\nFormat requis : YYYY-MM-DD (exemple: 2025-07-15)\nL'outil retourne True si la date est dans le futur, False si elle est passée ou aujourd'hui.\n",
         },
         {
             "type": "text",
-            "text": "Si il s'agit d'une question concernant une source écrite de droit, fais toujours au moins une recherche internet et répond sous cette structure :\n",
+            "text": "Lorsque la source est précise, il n'est pas nécessaire d'ajouter des mots clés en plus dans tes recherches\n",
+        },
+        {
+            "type": "text",
+            "text": "INSTRUCTIONS POUR LES ANALYSES JURIDIQUES :\n\nSi il s'agit d'une question concernant une source écrite de droit, fais toujours au moins une recherche internet et répond sous cette structure :\n",
         },
 
         {
             "type": "text",
-            "text": "Commence par écrire le Titre de la source écrite. Définis ensuite le cadre légal de la source relativement à la question. Fais ensuite une synthèse concise générale de la source écrite. Enfin fais une analyse approfondie étape par étape en ajoutant les référence à la fin de chaque paragraphe sous la forme [numéro de référence] de celle ci.\n",
+            "text": "##1. Titre de la source écrite\n##2. Définition du cadre légal de la source relativement à la question\n##3. Synthèse concise générale de la source écrite\n##4. Analyse approfondie étape par étape avec références [numéro de référence]\n5. Si des dates/délais sont mentionnés, utilise l'outil de vérification de date\n##6. Pose une question afférente au sujet à l'utilisateur\n",
         },
         {
             "type": "text",
-            "text": " Pose une question afférente au sujet à l'utilisateur.\n",
+            "text": "Si il s'agit d'une question concernant l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
         },
         {
             "type": "text",
-            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
+            "text": "1. Planification de la réponse sous forme de plan\n2. Définition du cadre légal relatif à la question\n3. Synthèse concise pointant sur les différentes parties de l'analyse\n4. Analyse approfondie avec vérification automatique des dates si pertinent\n5. Utilisation de l'outil de vérification de date pour tous délais mentionnés\n",
         },
-        {
-            "type": "text",
-            "text": "Premièrement, Planifie la réponse sous la forme d'un plan. Ensuite, définit le cadre légal relatif à la question ou au domaine d'application du droit. Fais ensuite une synthèse concise de la réponse pointant sur les différentes partie de la future analyse approfondie. Fais ensuite une analyse approfondie. \n",
-        },
-        {
-            "type": "text",
-            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
-        },
-        
         {
             "type": "text",
             "text": "Si il s'agit d'une analyse de document, fais toujours au moins une recherche internet.\n",
         },
-
+        {
+            "type": "text",
+            "text": "EXEMPLES D'UTILISATION DE L'OUTIL DE DATE :\n- 'La date limite d'appel est le 2025-07-15' → Utilise is_date_in_future('2025-07-15')\n- 'Le délai de prescription expire le 2025-12-31' → Utilise is_date_in_future('2025-12-31')\n- 'L'échéance contractuelle est fixée au 2024-01-01' → Utilise is_date_in_future('2024-01-01')\n",
+        },
         {
             "type": "text",
             "text": "Ajoute les références utilisées à la fin de ton paragraphe sous la forme [numéro de reference]\n ",
         },
         {
             "type": "text",
-            "text": "Enfin, Retourne les sources pertinentes sous forme d'une liste numerotées avec titre et url.\n",
+            "text": "Enfin, retourne les sources pertinentes sous forme d'une liste numérotée avec titre et url.\n",
         }
     ]
     
@@ -388,23 +460,39 @@ if prompt:
             content = content.replace('<div class="citations-block">', '').replace('</div>', '')
             content = content.replace('<div class="error-block">', '').replace('</div>', '')
             content = content.replace('<div class="document-block">', '').replace('</div>', '')
+            content = content.replace('<div class="tools-block">', '').replace('</div>', '')
             api_messages.append({"role": m["role"], "content": content})
         # Autres cas (si nécessaire)
         else:
             api_messages.append({"role": m["role"], "content": m["content"]})
     
     # Configuration des outils
-    tools = [{
-        "type": "web_search_20250305",
-        "name": "web_search",
-        "max_uses": max_searches,
-        "allowed_domains": allowed_domains,
-    }
-   
-             ]
+    tools = [
+        {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": max_searches,
+            "allowed_domains": allowed_domains,
+        },
+        {
+            "name": "is_date_in_future", 
+            "description": "Compare une date (YYYY-MM-DD) avec la date actuelle. Retourne True si la date est dans le futur, sinon False.", 
+            "input_schema": {
+                "type": "object", 
+                "properties": {
+                    "date_str": {
+                        "type": "string", 
+                        "description": "La date à comparer au format YYYY-MM-DD."
+                    }
+                }, 
+                "required": ["date_str"]
+            }
+        }
+    ]
     
-    # Réinitialiser les erreurs de recherche
+    # Réinitialiser les erreurs de recherche et les exécutions d'outils
     st.session_state.search_errors = []
+    st.session_state.tool_executions = []
     
     # Zone pour afficher la réponse de l'assistant
     with st.chat_message("assistant"):
@@ -427,9 +515,12 @@ if prompt:
             # Variables pour capturer la réponse
             complete_response_text = ""
             search_queries = []
+            tool_executions = []
             building_query = False
+            building_tool = False
             query_parts = []
-            search_div_added = False
+            tool_parts = []
+            current_tool_name = None
             
             # Démarrer le streaming
             with client.messages.stream(
@@ -445,18 +536,30 @@ if prompt:
                     # Gérer chaque type d'événement
                     if event.type == "content_block_start":
                         if hasattr(event, "content_block") and hasattr(event.content_block, "type"):
-                            if event.content_block.type == "server_tool_use" and event.content_block.name == "web_search":
+                            if event.content_block.type == "tool_use":
+                                current_tool_name = event.content_block.name
+                                if current_tool_name == "web_search":
+                                    building_query = True
+                                    query_parts = []
+                                elif current_tool_name == "is_date_in_future":
+                                    building_tool = True
+                                    tool_parts = []
+                            elif event.content_block.type == "server_tool_use" and event.content_block.name == "web_search":
                                 building_query = True
                                 query_parts = []
                     
                     elif event.type == "content_block_delta":
-                        # Capture des parties de la requête JSON
+                        # Capture des parties de la requête JSON pour les recherches web
                         if building_query and hasattr(event, "delta") and hasattr(event.delta, "type"):
                             if event.delta.type == "input_json_delta" and hasattr(event.delta, "partial_json"):
                                 query_parts.append(event.delta.partial_json)
                             elif event.delta.type == "tool_result_delta" and hasattr(event.delta, "partial_tool_result"):
-                                # Capturer les résultats d'outils qui pourraient contenir des erreurs
                                 query_parts.append(event.delta.partial_tool_result)
+                        
+                        # Capture des parties pour les outils personnalisés
+                        elif building_tool and hasattr(event, "delta") and hasattr(event.delta, "type"):
+                            if event.delta.type == "input_json_delta" and hasattr(event.delta, "partial_json"):
+                                tool_parts.append(event.delta.partial_json)
                         
                         # Capture du texte de réponse
                         elif hasattr(event, "delta") and hasattr(event.delta, "type"):
@@ -464,7 +567,7 @@ if prompt:
                                 text = event.delta.text
                                 complete_response_text += text
                                 
-                                # Construire la mise en page complète avec les requêtes, erreurs et la réponse
+                                # Construire la mise en page complète
                                 display_html = ""
                                 
                                 # Afficher les erreurs de recherche s'il y en a
@@ -478,9 +581,21 @@ if prompt:
                                     error_html += "</div>"
                                     display_html += error_html
                                 
+                                # Afficher les exécutions d'outils
+                                if tool_executions:
+                                    tools_html = """
+                                    <div class="tools-block">
+                                    <h4>🛠️ Outils exécutés:</h4>
+                                    """
+                                    for i, tool_exec in enumerate(tool_executions):
+                                        tools_html += f"<p><strong>Outil {i+1}:</strong> {tool_exec['name']} - {tool_exec['description']}</p>"
+                                        if 'result' in tool_exec:
+                                            tools_html += f"<p><strong>Résultat:</strong> {tool_exec['result']}</p>"
+                                    tools_html += "</div>"
+                                    display_html += tools_html
+                                
                                 # Utiliser HTML pour créer la mise en page des recherches
                                 if search_queries:
-                                    # Bloc de recherches
                                     search_html = """
                                     <div class="search-block">
                                     <h4>🔍 Recherches effectuées:</h4>
@@ -506,37 +621,6 @@ if prompt:
                             if is_error and error_message:
                                 # Ajouter l'erreur à la liste des erreurs
                                 st.session_state.search_errors.append(error_message)
-                                
-                                # Construire la mise en page HTML avec les erreurs
-                                display_html = ""
-                                
-                                # Afficher les erreurs de recherche
-                                error_html = """
-                                <div class="error-block">
-                                <h4>⚠️ Erreurs de recherche:</h4>
-                                """
-                                for i, error in enumerate(st.session_state.search_errors):
-                                    error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
-                                error_html += "</div>"
-                                display_html += error_html
-                                
-                                # Utiliser HTML pour créer la mise en page des recherches
-                                if search_queries:
-                                    # Bloc de recherches
-                                    search_html = """
-                                    <div class="search-block">
-                                    <h4>🔍 Recherches effectuées:</h4>
-                                    """
-                                    for i, query in enumerate(search_queries):
-                                        search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
-                                    search_html += "</div>"
-                                    display_html += search_html
-                                
-                                # Ajouter la réponse actuelle
-                                display_html += f"<div>{complete_response_text}</div>"
-                                
-                                # Utiliser un composant html pour garantir le rendu CSS
-                                response_placeholder.markdown(display_html, unsafe_allow_html=True)
                             else:
                                 # Reconstituer et extraire la requête complète (traitement normal)
                                 try:
@@ -569,40 +653,89 @@ if prompt:
                                     # Ajouter la requête si elle a été extraite avec succès
                                     if extracted_query:
                                         search_queries.append(extracted_query)
-                                        
-                                        # Construire la mise en page HTML complète
-                                        display_html = ""
-                                        # Afficher les erreurs de recherche s'il y en a
-                                        if st.session_state.search_errors:
-                                            error_html = """
-                                            <div class="error-block">
-                                            <h4>⚠️ Erreurs de recherche:</h4>
-                                            """
-                                            for i, error in enumerate(st.session_state.search_errors):
-                                                error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
-                                            error_html += "</div>"
-                                            display_html += error_html
-                                        
-                                        # Utiliser HTML pour créer la mise en page des recherches
-                                        if search_queries:
-                                            # Bloc de recherches
-                                            search_html = """
-                                            <div class="search-block">
-                                            <h4>🔍 Recherches effectuées:</h4>
-                                            """
-                                            for i, query in enumerate(search_queries):
-                                                search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
-                                            search_html += "</div>"
-                                            display_html += search_html
-                                        
-                                        # Ajouter la réponse actuelle
-                                        display_html += f"<div>{complete_response_text}</div>"
-                                        
-                                        # Utiliser un composant html pour garantir le rendu CSS
-                                        response_placeholder.markdown(display_html, unsafe_allow_html=True)
                                 except Exception as e:
                                     if debug_mode:
                                         st.error(f"Erreur lors de l'extraction de la requête: {str(e)}")
+                        
+                        elif building_tool and current_tool_name:
+                            building_tool = False
+                            
+                            # Reconstituer et exécuter l'outil
+                            try:
+                                tool_json = "".join(tool_parts)
+                                
+                                # Essayer d'extraire les paramètres de l'outil
+                                if tool_json.startswith("{") and tool_json.endswith("}"):
+                                    try:
+                                        tool_data = json.loads(tool_json)
+                                        
+                                        # Exécuter l'outil local
+                                        tool_result = execute_local_tool(current_tool_name, tool_data)
+                                        
+                                        # Ajouter à la liste des exécutions d'outils
+                                        tool_execution = {
+                                            "name": current_tool_name,
+                                            "description": f"Vérification de date: {tool_data.get('date_str', 'N/A')}",
+                                            "input": tool_data,
+                                            "result": tool_result.get("message", str(tool_result))
+                                        }
+                                        tool_executions.append(tool_execution)
+                                        st.session_state.tool_executions.append(tool_execution)
+                                        
+                                    except json.JSONDecodeError as e:
+                                        if debug_mode:
+                                            st.error(f"Erreur lors du parsing de l'outil: {str(e)}")
+                            except Exception as e:
+                                if debug_mode:
+                                    st.error(f"Erreur lors de l'exécution de l'outil: {str(e)}")
+                            
+                            # Réinitialiser les variables
+                            current_tool_name = None
+                            tool_parts = []
+                        
+                        # Mise à jour de l'affichage après traitement des outils
+                        display_html = ""
+                        
+                        # Afficher les erreurs de recherche s'il y en a
+                        if st.session_state.search_errors:
+                            error_html = """
+                            <div class="error-block">
+                            <h4>⚠️ Erreurs de recherche:</h4>
+                            """
+                            for i, error in enumerate(st.session_state.search_errors):
+                                error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
+                            error_html += "</div>"
+                            display_html += error_html
+                        
+                        # Afficher les exécutions d'outils
+                        if tool_executions:
+                            tools_html = """
+                            <div class="tools-block">
+                            <h4>🛠️ Outils exécutés:</h4>
+                            """
+                            for i, tool_exec in enumerate(tool_executions):
+                                tools_html += f"<p><strong>Outil {i+1}:</strong> {tool_exec['name']} - {tool_exec['description']}</p>"
+                                if 'result' in tool_exec:
+                                    tools_html += f"<p><strong>Résultat:</strong> {tool_exec['result']}</p>"
+                            tools_html += "</div>"
+                            display_html += tools_html
+                        
+                        # Utiliser HTML pour créer la mise en page des recherches
+                        if search_queries:
+                            search_html = """
+                            <div class="search-block">
+                            <h4>🔍 Recherches effectuées:</h4>
+                            """
+                            for i, query in enumerate(search_queries):
+                                search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
+                            search_html += "</div>"
+                            display_html += search_html
+                        
+                        # Ajouter la réponse actuelle
+                        display_html += f"<div>{complete_response_text}</div>"
+                        
+                        # Utiliser un composant html pour garantir le rendu CSS
+                        response_placeholder.markdown(display_html, unsafe_allow_html=True)
                 
                 # Récupérer le message final
                 final_message = stream.get_final_message()
@@ -636,6 +769,10 @@ if prompt:
                     pdf_cost = pdf_size_mb * 0.01  # Coût fictif, à adapter
                     total_cost += pdf_cost
                 
+                # Coût des outils personnalisés (estimation)
+                tool_cost = len(tool_executions) * 0.001
+                total_cost += tool_cost
+                
                 stats_placeholder.markdown(
                     f"""
                     ⏱️ Temps de réponse: {response_time} secondes | 
@@ -645,9 +782,10 @@ if prompt:
                     💲 Coût en tokens de sortie estimé: {output_cost:.6f} | 
                     🔎 Recherches web: {web_search_requests} | 
                     💲 Coût en recherches web estimé: {search_cost:.6f} |
+                    🛠️ Outils exécutés: {len(tool_executions)} |
                     {"📄 Document PDF traité |" if pdf_data else ""}
-                    💲 Coût total estimé: {total_cost:.6f}
-                     Raison d'arrêt: {final_message.stop_reason}
+                    💲 Coût total estimé: {total_cost:.6f} |
+                    Raison d'arrêt: {final_message.stop_reason}
                     """
                 )
                 
@@ -660,17 +798,28 @@ if prompt:
                                 st.write(f"**URL:** {citation.get('url', 'Non disponible')}")
                                 st.write(f"**Extrait:** {citation.get('text', 'Non disponible')}")
                 
+                # Afficher les détails des outils exécutés dans la sidebar si demandé
+                if tool_executions and debug_mode:
+                    with st.sidebar:
+                        st.subheader("Détails des outils exécutés")
+                        for i, tool_exec in enumerate(tool_executions):
+                            with st.expander(f"Outil {i+1}: {tool_exec['name']}"):
+                                st.write(f"**Description:** {tool_exec['description']}")
+                                st.write(f"**Entrée:** {tool_exec.get('input', 'Non disponible')}")
+                                st.write(f"**Résultat:** {tool_exec.get('result', 'Non disponible')}")
+                
                 # Mettre à jour la session
                 st.session_state.citations = citations
                 st.session_state.usage_stats = {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "web_search_requests": web_search_requests,
+                    "tool_executions": len(tool_executions),
                     "response_time": response_time
                 }
                 st.session_state.response_time = response_time
                 
-                # Construire la réponse finale complète avec les recherches, erreurs et citations en HTML
+                # Construire la réponse finale complète avec les recherches, erreurs, outils et citations en HTML
                 final_html = ""
                 
                 # Ajouter le bloc d'erreurs si nécessaire
@@ -686,14 +835,35 @@ if prompt:
                 
                 # Ajouter le bloc document si un PDF a été utilisé
                 if pdf_data:
-                    pdf_name = st.session_state.uploaded_file.name if hasattr(st.session_state.uploaded_file, 'name') else "Document"
+                    pdf_names = []
+                    if hasattr(st.session_state.uploaded_file, '__iter__'):
+                        for file in st.session_state.uploaded_file:
+                            if hasattr(file, 'name'):
+                                pdf_names.append(file.name)
+                    if not pdf_names:
+                        pdf_names = ["Document PDF"]
+                    
                     document_html = f"""
                     <div class="document-block">
-                    <h4>📄 Document de référence utilisé:</h4>
-                    <p>{pdf_name}</p>
-                    </div>
+                    <h4>📄 Document(s) de référence utilisé(s):</h4>
                     """
+                    for name in pdf_names:
+                        document_html += f"<p>{name}</p>"
+                    document_html += "</div>"
                     final_html += document_html
+                
+                # Ajouter le bloc des outils exécutés
+                if tool_executions:
+                    tools_html = """
+                    <div class="tools-block">
+                    <h4>🛠️ Outils exécutés:</h4>
+                    """
+                    for i, tool_exec in enumerate(tool_executions):
+                        tools_html += f"<p><strong>Outil {i+1}:</strong> {tool_exec['name']} - {tool_exec['description']}</p>"
+                        if 'result' in tool_exec:
+                            tools_html += f"<p><strong>Résultat:</strong> {tool_exec['result']}</p>"
+                    tools_html += "</div>"
+                    final_html += tools_html
                 
                 # Ajouter le bloc de recherches si nécessaire
                 if search_queries:
@@ -709,29 +879,7 @@ if prompt:
                 # Ajouter la réponse
                 final_html += f"<div>{complete_response_text}</div>"
                 
-                # Ajouter les citations si elles existent
-                # if citations:
-                #     citations_html = """
-                #     <div class="citations-block">
-                #     <h4>📚 Sources consultées:</h4>
-                #     """
-                #     for i, citation in enumerate(citations):
-                #         title = citation.get("title", "Sans titre")
-                #         url = citation.get("url", "")
-                #         text = citation.get("text", "")
-                        
-                #         citations_html += f"<p><strong>Source {i+1}:</strong> {title}</p>"
-                #         if url:
-                #             citations_html += f"<p>URL: {url}</p>"
-                #         if text:
-                #             # Limiter la longueur du texte cité
-                #             if len(text) > 150:
-                #                 text = text[:150] + "..."
-                #             citations_html += f"<p>Extrait: \"{text}\"</p>"
-                #     citations_html += "</div>"
-                #     final_html += citations_html
-                
-                # Ajouter la réponse à l'historique (avec les recherches et citations incluses)
+                # Ajouter la réponse à l'historique (avec les recherches, outils et citations incluses)
                 st.session_state.messages.append({"role": "assistant", "content": final_html})
                 
                 # Mettre à jour l'affichage une dernière fois
@@ -739,3 +887,8 @@ if prompt:
         
         except Exception as e:
             st.error(f"Erreur lors de la communication avec l'API: {str(e)}")
+
+
+# Footer
+st.markdown("---")
+st.markdown("🇫🇷 Assistant Juridique Français ")
