@@ -5,10 +5,6 @@ from dotenv import load_dotenv
 import os
 import json
 import base64
-from typing import List, Dict, Any, Optional
-from LEGIFRANCE.consult_codes_tool import multiple_code_search_api
-from LEGIFRANCE.consult_jurisrudences_tool import consult_multiple_juri_text
-
 
 # Chargement des variables d'environnement
 load_dotenv()
@@ -32,11 +28,13 @@ def encode_pdf_to_base64(uploaded_file):
         str: Chaîne encodée en base64
     """
     if uploaded_file is not None:
-        # Lire le contenu du fichier
-        pdf_bytes = uploaded_file.getvalue()
-        
-        # Encoder en base64
-        base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+        base64_pdf = ""
+        for file in uploaded_file:
+            # Lire le contenu du fichier
+            pdf_bytes = file.getvalue()
+            
+            # Encoder en base64
+            base64_pdf += base64.b64encode(pdf_bytes).decode('utf-8')
         
         return base64_pdf
     
@@ -115,36 +113,20 @@ def extract_citations_from_blocks(content_blocks):
     
     return citations
 
-# Fonction pour traiter les appels d'outils personnalisés
-def process_tool_call(tool_name, tool_input):
-    """
-    Traite les appels aux outils personnalisés.
-    
-    Args:
-        tool_name (str): Nom de l'outil
-        tool_input (dict): Paramètres d'entrée pour l'outil
-        
-    Returns:
-        str: Résultat de l'exécution de l'outil
-    """
-    if tool_name == "consult_multiple_juri_text":
-        id_list = tool_input.get("id_list", [])
-        result = consult_multiple_juri_text(id_list)
-        # Conversion du résultat en chaîne JSON si nécessaire
-        if not isinstance(result, str):
-            result = json.dumps(result, ensure_ascii=False, indent=2)
-        return result
-    
-    elif tool_name == "multiple_code_search_api":
-        liste_articles = tool_input.get("liste_articles", [])
-        result = multiple_code_search_api(liste_articles)
-        # Conversion du résultat en chaîne JSON si nécessaire
-        if not isinstance(result, str):
-            result = json.dumps(result, ensure_ascii=False, indent=2)
-        return result
-    
-    return "Outil non reconnu ou erreur d'exécution"
+# Fonction pour faire une recherche web via google search api 
+import requests 
+def google_search(query, api_key, cx, num_results=5):
+    response = requests.get(
+        "https://www.googleapis.com/customsearch/v1",
+        params={
+            "q": query,
+            "key": api_key,
+            "cx": cx,
+            "num": num_results
+        }
+    )
 
+    
 # Initialisation des variables de session
 if 'messages' not in st.session_state:
     st.session_state.messages = []
@@ -158,18 +140,15 @@ if 'search_errors' not in st.session_state:
     st.session_state.search_errors = []
 if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
-if 'tool_uses' not in st.session_state:
-    st.session_state.tool_uses = []
 
 # Titre de l'application
-st.title("Assistant Juridique Français 🇫🇷⚖️")
+st.title("Assistant Juridique Français Anthropic 🇫🇷⚖️")
 
 # Ajouter du CSS personnalisé dès le début pour s'assurer qu'il est toujours appliqué
 st.markdown("""
 <style>
 .stApp {
     max-width: 1200px;
-    margin: 0 auto;
 }
 
 /* Style pour le bloc de recherche avec fond gris et opacité */
@@ -231,21 +210,6 @@ div.document-block h4 {
     margin-bottom: 8px;
 }
 
-/* Style pour les outils */
-div.tool-block {
-    background-color: rgba(230, 255, 240, 0.85);
-    border-radius: 8px;
-    padding: 12px 15px;
-    margin-bottom: 16px;
-    border-left: 3px solid #06d6a0;
-}
-
-div.tool-block h4 {
-    color: #06d6a0;
-    margin-top: 0;
-    margin-bottom: 8px;
-}
-
 /* Style pour les séparateurs */
 hr {
     margin: 1rem 0;
@@ -263,41 +227,42 @@ with st.sidebar:
     # Sélection du modèle
     model = st.selectbox(
         "Modèle Claude",
-        ["claude-3-5-haiku-latest", "claude-3-7-sonnet-latest"],
+        ["claude-3-7-sonnet-latest","claude-3-5-haiku-latest", "claude-4-0-sonnet"]
     )
     
     # Paramètres avancés
     st.subheader("Paramètres avancés")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-    max_tokens = st.slider("Tokens max en sortie", 500, 4000, 1500, 100)
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.1)
+    max_tokens = st.slider("Tokens max en sortie", 500, 4000, 3000, 100)
     max_searches = st.slider("Nombre max de recherches web", 1, 5, 3, 1)
     
     # Domaines autorisés
     st.subheader("Domaines prioritaires pour la recherche")
     domains = st.text_area(
         "Domaines autorisés (un par ligne)",
-        "www.legifrance.gouv.fr\nannuaire-entreprises.data.gouv.fr\nservice-public.fr\nwww.conseil-etat.fr\nwww.conseil-constitutionnel.fr"
+        "www.legifrance.gouv.fr\nannuaire-entreprises.data.gouv.fr\nservice-public.fr\nwww.conseil-constitutionnel.fr\nwww.conseil-etat.fr\n"
     )
     allowed_domains = [d.strip() for d in domains.split('\n') if d.strip()]
     
     # Téléchargement de document
     st.subheader("Document de référence")
-    uploaded_file = st.file_uploader("Télécharger un PDF (8 Mo Maximum)", type=["pdf"])
+    uploaded_file = st.file_uploader("Télécharger un PDF (8 Mo Maximum)", type=["pdf"],accept_multiple_files=True)
     
     # Si un fichier est téléchargé, l'enregistrer dans la session
     if uploaded_file is not None:
-        st.session_state.uploaded_file = uploaded_file
-        st.success(f"Document '{uploaded_file.name}' prêt à être utilisé")
+        for file in uploaded_file:
+            # Vérifier si le fichier est un PDF
+            if file.type != "application/pdf":
+                st.error("Veuillez télécharger un fichier PDF valide.")
+                
+            st.session_state.uploaded_file = uploaded_file
+            st.success(f"Document '{file.name}' prêt à être utilisé")
         
         # Ajouter une prévisualisation du document PDF
         pdf_display = f'<iframe src="data:application/pdf;base64,{encode_pdf_to_base64(uploaded_file)}" width="100%" height="200" type="application/pdf"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
     
-    # Bouton pour supprimer le document
-    if st.session_state.uploaded_file is not None:
-        if st.button("Supprimer le document"):
-            st.session_state.uploaded_file = None
-            st.experimental_rerun()
+   
     
     # Debug mode
     debug_mode = st.checkbox("Mode débogage", value=False)
@@ -332,6 +297,7 @@ if prompt:
     pdf_data = None
     if st.session_state.uploaded_file is not None:
         pdf_data = encode_pdf_to_base64(st.session_state.uploaded_file)
+   
     
     if pdf_data:
         # Message avec document attaché
@@ -360,50 +326,65 @@ if prompt:
             st.markdown(prompt)
     
     # récupérer la date actuelle
-    current_date = time.strftime("%d/%m/%Y")
-    current_year = time.strftime("%Y")
+    date = time.strftime("%d/%m/%Y")
 
     # Préparer le système prompt
     system = [
         {
             "type": "text",
-            "text": f"Tu es un assistant IA Français spécialisé dans le domaine du droit français.\n"
+            "text": "Tu es un assistant IA Français spécialisé dans le domaine du droit français qui répond toujours en français.\n",
+        },
+        
+        {
+            "type": "text",
+            "text": "Tu peux effectuer des recherches sur le web pour trouver des informations juridiques pertinentes.\n",
         },
         {
             "type": "text",
-            "text": f"La date d'aujourd'hui est le {current_date}. Ne ne sommes pas en 2024 mais en {current_year}. \n"
+            "text": "Pour toute question relative à la date. Demande toi quelle est la date d'ajourd'hui. La date d'aujourd'hui est le {date} ce qui est après la date de tes recherches.. \n",
+        },
+                {
+            "type": "text",
+            "text": "n Lorsque la source est précise, il n'est pas nécéssaire d'ajouter des mots clés en plus dans tes recherches\n",
         },
         {
             "type": "text",
-            "text": "Lorsque la source est précise, il n'est pas nécessaire d'ajouter des mots clés en plus dans tes recherches\n"
+            "text": "Si il s'agit d'une question concernant une source écrite de droit, fais toujours au moins une recherche internet et répond sous cette structure :\n",
+        },
+
+        {
+            "type": "text",
+            "text": "Commence par écrire le Titre de la source écrite. Définis ensuite le cadre légal de la source relativement à la question. Fais ensuite une synthèse concise générale de la source écrite. Enfin fais une analyse approfondie étape par étape en ajoutant les référence à la fin de chaque paragraphe sous la forme [numéro de référence] de celle ci.\n",
         },
         {
             "type": "text",
-            "text": "Tu es capable de répondre à des questions juridiques et de fournir des conseils sur des sujets liés au droit français en citant des références en droit français.\n"
+            "text": " Pose une question afférente au sujet à l'utilisateur.\n",
         },
         {
             "type": "text",
-            "text": "Tu dois effectuer des recherches sur le web pour trouver des informations juridiques pertinentes.\n"
+            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
         },
         {
             "type": "text",
-            "text": "Tu as aussi accès à deux outils spécialisés : consult_multiple_juri_text pour consulter des textes juridiques et multiple_code_search_api pour rechercher des articles de code.\n"
+            "text": "Premièrement, Planifie la réponse sous la forme d'un plan. Ensuite, définit le cadre légal relatif à la question ou au domaine d'application du droit. Fais ensuite une synthèse concise de la réponse pointant sur les différentes partie de la future analyse approfondie. Fais ensuite une analyse approfondie. \n",
         },
         {
             "type": "text",
-            "text": "Important : Pour toutes tes réponses nécessitant des sources externes : Utilise systématiquement le format de citation suivant :<titre>Titre complet de la source</titre> <url>Lien exact vers la source</url><extrait>Extrait pertinent et concis de la source (limité à 2-3 phrases clés)</extrait> \n "
+            "text": "Si il s'agit d'une question concernant une l'état du droit dans un domaine ou l'application du droit à des faits, fais toujours au strict minimum une recherche internet et répond sous cette structure :\n",
+        },
+        
+        {
+            "type": "text",
+            "text": "Si il s'agit d'une analyse de document, fais toujours au moins une recherche internet.\n",
+        },
+
+        {
+            "type": "text",
+            "text": "Ajoute les références utilisées à la fin de ton paragraphe sous la forme [numéro de reference]\n ",
         },
         {
             "type": "text",
-            "text": "Tu dois toujours respecter la vie privée et la confidentialité des utilisateurs.\n"
-        },
-        {
-            "type": "text",
-            "text": "Retourne les sources pertinentes sous forme d'une liste avec titre et url.\n"
-        },
-        {
-            "type": "text",
-            "text": "Si un document PDF est joint à la question, analyse son contenu et base-toi dessus pour ta réponse.\n"
+            "text": "Enfin, Retourne les sources pertinentes sous forme d'une liste numerotées avec titre et url.\n",
         }
     ]
     
@@ -421,70 +402,23 @@ if prompt:
             content = content.replace('<div class="citations-block">', '').replace('</div>', '')
             content = content.replace('<div class="error-block">', '').replace('</div>', '')
             content = content.replace('<div class="document-block">', '').replace('</div>', '')
-            content = content.replace('<div class="tool-block">', '').replace('</div>', '')
             api_messages.append({"role": m["role"], "content": content})
         # Autres cas (si nécessaire)
         else:
             api_messages.append({"role": m["role"], "content": m["content"]})
     
     # Configuration des outils
-    tools = [
-        {
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": max_searches,
-            "allowed_domains": allowed_domains,
-        },
-        {
-            "name": "consult_multiple_juri_text",
-            "description": "Consulte plusieurs textes juridiques en fonction d'une liste d'identifiants",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "id_list": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        },
-                        "description": "Liste des identifiants des textes juridiques à consulter"
-                    }
-                },
-                "required": ["id_list"]
-            }
-        },
-        {
-            "name": "multiple_code_search_api",
-            "description": "Recherche plusieurs articles de codes juridiques à partir de leurs numéros et noms de code",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "liste_articles": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "numero": {
-                                    "type": "string",
-                                    "description": "Numéro de l'article (ex: 'L121.2')"
-                                },
-                                "nom_code": {
-                                    "type": "string",
-                                    "description": "Nom du code (ex: 'Code de commerce')"
-                                }
-                            },
-                            "required": ["numero", "nom_code"]
-                        },
-                        "description": "Liste des articles à rechercher avec leur numéro et nom de code"
-                    }
-                },
-                "required": ["liste_articles"]
-            }
-        }
-    ]
+    tools = [{
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": max_searches,
+        "allowed_domains": allowed_domains,
+    }
+   
+             ]
     
-    # Réinitialiser les erreurs de recherche et utilisations d'outils
+    # Réinitialiser les erreurs de recherche
     st.session_state.search_errors = []
-    st.session_state.tool_uses = []
     
     # Zone pour afficher la réponse de l'assistant
     with st.chat_message("assistant"):
@@ -509,8 +443,7 @@ if prompt:
             search_queries = []
             building_query = False
             query_parts = []
-            tool_calls = []
-            current_tool_call = None
+            search_div_added = False
             
             # Démarrer le streaming
             with client.messages.stream(
@@ -526,32 +459,18 @@ if prompt:
                     # Gérer chaque type d'événement
                     if event.type == "content_block_start":
                         if hasattr(event, "content_block") and hasattr(event.content_block, "type"):
-                            # Gestion des recherches web
                             if event.content_block.type == "server_tool_use" and event.content_block.name == "web_search":
                                 building_query = True
                                 query_parts = []
-                            # Gestion des outils personnalisés
-                            elif event.content_block.type == "tool_use":
-                                current_tool_call = {
-                                    "name": event.content_block.name,
-                                    "id": event.content_block.id,
-                                    "input_parts": [],
-                                    "input": {}
-                                }
                     
                     elif event.type == "content_block_delta":
-                        # Capture des parties de la requête JSON pour la recherche web
+                        # Capture des parties de la requête JSON
                         if building_query and hasattr(event, "delta") and hasattr(event.delta, "type"):
                             if event.delta.type == "input_json_delta" and hasattr(event.delta, "partial_json"):
                                 query_parts.append(event.delta.partial_json)
                             elif event.delta.type == "tool_result_delta" and hasattr(event.delta, "partial_tool_result"):
                                 # Capturer les résultats d'outils qui pourraient contenir des erreurs
                                 query_parts.append(event.delta.partial_tool_result)
-                        
-                        # Capture des entrées d'outils personnalisés
-                        elif current_tool_call is not None and hasattr(event, "delta") and hasattr(event.delta, "type"):
-                            if event.delta.type == "input_json_delta" and hasattr(event.delta, "partial_json"):
-                                current_tool_call["input_parts"].append(event.delta.partial_json)
                         
                         # Capture du texte de réponse
                         elif hasattr(event, "delta") and hasattr(event.delta, "type"):
@@ -572,17 +491,6 @@ if prompt:
                                         error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
                                     error_html += "</div>"
                                     display_html += error_html
-                                
-                                # Afficher les outils utilisés s'il y en a
-                                if st.session_state.tool_uses:
-                                    tool_html = """
-                                    <div class="tool-block">
-                                    <h4>🔧 Outils utilisés:</h4>
-                                    """
-                                    for i, tool in enumerate(st.session_state.tool_uses):
-                                        tool_html += f"<p><strong>Outil {i+1}:</strong> <em>{tool['name']}</em></p>"
-                                    tool_html += "</div>"
-                                    display_html += tool_html
                                 
                                 # Utiliser HTML pour créer la mise en page des recherches
                                 if search_queries:
@@ -612,6 +520,37 @@ if prompt:
                             if is_error and error_message:
                                 # Ajouter l'erreur à la liste des erreurs
                                 st.session_state.search_errors.append(error_message)
+                                
+                                # Construire la mise en page HTML avec les erreurs
+                                display_html = ""
+                                
+                                # Afficher les erreurs de recherche
+                                error_html = """
+                                <div class="error-block">
+                                <h4>⚠️ Erreurs de recherche:</h4>
+                                """
+                                for i, error in enumerate(st.session_state.search_errors):
+                                    error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
+                                error_html += "</div>"
+                                display_html += error_html
+                                
+                                # Utiliser HTML pour créer la mise en page des recherches
+                                if search_queries:
+                                    # Bloc de recherches
+                                    search_html = """
+                                    <div class="search-block">
+                                    <h4>🔍 Recherches effectuées:</h4>
+                                    """
+                                    for i, query in enumerate(search_queries):
+                                        search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
+                                    search_html += "</div>"
+                                    display_html += search_html
+                                
+                                # Ajouter la réponse actuelle
+                                display_html += f"<div>{complete_response_text}</div>"
+                                
+                                # Utiliser un composant html pour garantir le rendu CSS
+                                response_placeholder.markdown(display_html, unsafe_allow_html=True)
                             else:
                                 # Reconstituer et extraire la requête complète (traitement normal)
                                 try:
@@ -644,86 +583,40 @@ if prompt:
                                     # Ajouter la requête si elle a été extraite avec succès
                                     if extracted_query:
                                         search_queries.append(extracted_query)
+                                        
+                                        # Construire la mise en page HTML complète
+                                        display_html = ""
+                                        # Afficher les erreurs de recherche s'il y en a
+                                        if st.session_state.search_errors:
+                                            error_html = """
+                                            <div class="error-block">
+                                            <h4>⚠️ Erreurs de recherche:</h4>
+                                            """
+                                            for i, error in enumerate(st.session_state.search_errors):
+                                                error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
+                                            error_html += "</div>"
+                                            display_html += error_html
+                                        
+                                        # Utiliser HTML pour créer la mise en page des recherches
+                                        if search_queries:
+                                            # Bloc de recherches
+                                            search_html = """
+                                            <div class="search-block">
+                                            <h4>🔍 Recherches effectuées:</h4>
+                                            """
+                                            for i, query in enumerate(search_queries):
+                                                search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
+                                            search_html += "</div>"
+                                            display_html += search_html
+                                        
+                                        # Ajouter la réponse actuelle
+                                        display_html += f"<div>{complete_response_text}</div>"
+                                        
+                                        # Utiliser un composant html pour garantir le rendu CSS
+                                        response_placeholder.markdown(display_html, unsafe_allow_html=True)
                                 except Exception as e:
                                     if debug_mode:
                                         st.error(f"Erreur lors de l'extraction de la requête: {str(e)}")
-                                        
-                        elif current_tool_call is not None:
-                            # Traitement de la fin d'un appel d'outil personnalisé
-                            try:
-                                # Reconstituer l'entrée complète de l'outil
-                                input_json = "".join(current_tool_call["input_parts"])
-                                if input_json:
-                                    current_tool_call["input"] = json.loads(input_json)
-                                
-                                # Exécuter l'outil
-                                tool_result = process_tool_call(current_tool_call["name"], current_tool_call["input"])
-                                
-                                # Enregistrer l'utilisation de l'outil
-                                st.session_state.tool_uses.append({
-                                    "name": current_tool_call["name"],
-                                    "input": current_tool_call["input"],
-                                    "result": tool_result
-                                })
-                                
-                                # Envoyer le résultat à Claude
-                                stream.submit_tool_result(
-                                    tool_result=tool_result,
-                                    tool_use_id=current_tool_call["id"]
-                                )
-                            except Exception as e:
-                                error_message = f"Erreur lors de l'exécution de l'outil {current_tool_call['name']}: {str(e)}"
-                                st.session_state.search_errors.append(error_message)
-                                # Envoyer une erreur à Claude
-                                stream.submit_tool_result(
-                                    tool_result=f"Erreur: {str(e)}",
-                                    tool_use_id=current_tool_call["id"]
-                                )
-                            finally:
-                                current_tool_call = None
-                            
-                            # Mise à jour de l'affichage
-                            display_html = ""
-                            
-                            # Afficher les erreurs de recherche s'il y en a
-                            if st.session_state.search_errors:
-                                error_html = """
-                                <div class="error-block">
-                                <h4>⚠️ Erreurs de recherche:</h4>
-                                """
-                                for i, error in enumerate(st.session_state.search_errors):
-                                    error_html += f"<p><strong>Erreur {i+1}:</strong> <em>{error}</em></p>"
-                                error_html += "</div>"
-                                display_html += error_html
-                            
-                            # Afficher les outils utilisés s'il y en a
-                            if st.session_state.tool_uses:
-                                tool_html = """
-                                <div class="tool-block">
-                                <h4>🔧 Outils utilisés:</h4>
-                                """
-                                for i, tool in enumerate(st.session_state.tool_uses):
-                                    tool_html += f"<p><strong>Outil {i+1}:</strong> <em>{tool['name']}</em></p>"
-                                tool_html += "</div>"
-                                display_html += tool_html
-                            
-                            # Utiliser HTML pour créer la mise en page des recherches
-                            if search_queries:
-                                # Bloc de recherches
-                                search_html = """
-                                <div class="search-block">
-                                <h4>🔍 Recherches effectuées:</h4>
-                                """
-                                for i, query in enumerate(search_queries):
-                                    search_html += f"<p><strong>Recherche {i+1}:</strong> <em>{query}</em></p>"
-                                search_html += "</div>"
-                                display_html += search_html
-                            
-                            # Ajouter la réponse actuelle
-                            display_html += f"<div>{complete_response_text}</div>"
-                            
-                            # Utiliser un composant html pour garantir le rendu CSS
-                            response_placeholder.markdown(display_html, unsafe_allow_html=True)
                 
                 # Récupérer le message final
                 final_message = stream.get_final_message()
@@ -735,23 +628,19 @@ if prompt:
                 usage = final_message.usage
                 input_tokens = usage.input_tokens if usage else "Non disponible"
                 output_tokens = usage.output_tokens if usage else "Non disponible"
-                
-                # Calculer le nombre de recherches web et d'outils personnalisés utilisés
-                web_search_requests = len(search_queries)
-                custom_tool_requests = len(st.session_state.tool_uses)
+                web_search_requests = usage.server_tool_use.web_search_requests if usage and usage.server_tool_use else 0
                 
                 # Calculer le temps de réponse
                 response_time = round(time.time() - start_time, 2)
                 
                 # Afficher les statistiques d'utilisation
                 try:
-                    entry_cost = (int(input_tokens) / 1000000) * 0.8
-                    output_cost = (int(output_tokens) / 1000000) * 4
+                    entry_cost = (int(input_tokens) / 1000000) * 3
+                    output_cost = (int(output_tokens) / 1000000) * 15
                     search_cost = (int(web_search_requests) / 1000) * 10
-                    tool_cost = (int(custom_tool_requests) / 1000) * 15  # Coût fictif pour les outils personnalisés
-                    total_cost = entry_cost + output_cost + search_cost + tool_cost
+                    total_cost = entry_cost + output_cost + search_cost
                 except:
-                    entry_cost = output_cost = search_cost = tool_cost = total_cost = 0
+                    entry_cost = output_cost = search_cost = total_cost = 0
                 
                 # Ajouter un coût supplémentaire si un PDF a été utilisé
                 pdf_cost = 0
@@ -769,10 +658,10 @@ if prompt:
                     🔤 Tokens de sortie: {output_tokens} | 
                     💲 Coût en tokens de sortie estimé: {output_cost:.6f} | 
                     🔎 Recherches web: {web_search_requests} | 
-                    🔧 Outils personnalisés: {custom_tool_requests} |
+                    💲 Coût en recherches web estimé: {search_cost:.6f} |
                     {"📄 Document PDF traité |" if pdf_data else ""}
-                    💲 Coût total estimé: {total_cost:.6f} |
-                    Raison d'arrêt: {final_message.stop_reason}
+                    💲 Coût total estimé: {total_cost:.6f}
+                     Raison d'arrêt: {final_message.stop_reason}
                     """
                 )
                 
@@ -791,7 +680,6 @@ if prompt:
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "web_search_requests": web_search_requests,
-                    "custom_tool_requests": custom_tool_requests,
                     "response_time": response_time
                 }
                 st.session_state.response_time = response_time
@@ -821,22 +709,6 @@ if prompt:
                     """
                     final_html += document_html
                 
-                # Ajouter le bloc des outils utilisés si nécessaire
-                if st.session_state.tool_uses:
-                    tool_html = """
-                    <div class="tool-block">
-                    <h4>🔧 Outils juridiques utilisés:</h4>
-                    """
-                    for i, tool in enumerate(st.session_state.tool_uses):
-                        tool_html += f"<p><strong>Outil {i+1}:</strong> <em>{tool['name']}</em>"
-                        if debug_mode:
-                            # Ajouter des détails sur l'entrée et le résultat si en mode debug
-                            tool_html += f" avec les paramètres : {json.dumps(tool['input'], ensure_ascii=False)[:100]}...</p>"
-                        else:
-                            tool_html += "</p>"
-                    tool_html += "</div>"
-                    final_html += tool_html
-                
                 # Ajouter le bloc de recherches si nécessaire
                 if search_queries:
                     search_html = """
@@ -852,26 +724,26 @@ if prompt:
                 final_html += f"<div>{complete_response_text}</div>"
                 
                 # Ajouter les citations si elles existent
-                if citations:
-                    citations_html = """
-                    <div class="citations-block">
-                    <h4>📚 Sources consultées:</h4>
-                    """
-                    for i, citation in enumerate(citations):
-                        title = citation.get("title", "Sans titre")
-                        url = citation.get("url", "")
-                        text = citation.get("text", "")
+                # if citations:
+                #     citations_html = """
+                #     <div class="citations-block">
+                #     <h4>📚 Sources consultées:</h4>
+                #     """
+                #     for i, citation in enumerate(citations):
+                #         title = citation.get("title", "Sans titre")
+                #         url = citation.get("url", "")
+                #         text = citation.get("text", "")
                         
-                        citations_html += f"<p><strong>Source {i+1}:</strong> {title}</p>"
-                        if url:
-                            citations_html += f"<p>URL: <a href='{url}' target='_blank'>{url}</a></p>"
-                        if text:
-                            # Limiter la longueur du texte cité
-                            if len(text) > 150:
-                                text = text[:150] + "..."
-                            citations_html += f"<p>Extrait: \"{text}\"</p>"
-                    citations_html += "</div>"
-                    final_html += citations_html
+                #         citations_html += f"<p><strong>Source {i+1}:</strong> {title}</p>"
+                #         if url:
+                #             citations_html += f"<p>URL: {url}</p>"
+                #         if text:
+                #             # Limiter la longueur du texte cité
+                #             if len(text) > 150:
+                #                 text = text[:150] + "..."
+                #             citations_html += f"<p>Extrait: \"{text}\"</p>"
+                #     citations_html += "</div>"
+                #     final_html += citations_html
                 
                 # Ajouter la réponse à l'historique (avec les recherches et citations incluses)
                 st.session_state.messages.append({"role": "assistant", "content": final_html})

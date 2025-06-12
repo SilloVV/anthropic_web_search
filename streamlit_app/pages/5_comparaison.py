@@ -1,3 +1,4 @@
+
 import streamlit as st
 import anthropic
 import httpx
@@ -11,6 +12,7 @@ import traceback
 from datetime import datetime
 import uuid
 import hashlib
+import random
 
 # Import Gemini
 from google import genai
@@ -37,6 +39,57 @@ except ImportError:
 
 # Chargement des variables d'environnement
 load_dotenv()
+
+# ==================== ANONYMISATION DES MODÈLES ====================
+
+# Dictionnaire des noms anonymisés
+ANONYMOUS_NAMES = [
+    "Assistant Alpha", "Assistant Beta", "Assistant Gamma", "Assistant Delta", 
+    "Assistant Epsilon", "Assistant Zeta", "Assistant Eta", "Assistant Theta",
+    "Assistant Iota", "Assistant Kappa", "Assistant Lambda", "Assistant Mu",
+    "Assistant Nu", "Assistant Xi", "Assistant Omicron", "Assistant Pi",
+    "Assistant Rho", "Assistant Sigma", "Assistant Tau", "Assistant Upsilon"
+]
+
+# Mapping des vrais noms vers les noms réels (pour usage interne)
+REAL_MODEL_NAMES = {
+    "Claude 3.5 Haiku": "claude-3-5-haiku-latest",
+    "Claude 3.7 Sonnet": "claude-3-7-sonnet-20250219", 
+    "Claude Sonnet 4": "claude-sonnet-4-20250514",
+    "Google Gemini": "gemini-2.0-flash-exp",
+    "Google Gemini 2.0 Flash + Perplexity": "gemini-2.0-flash-exp",
+    "Perplexity AI": "sonar-pro"
+}
+
+def init_model_anonymization():
+    """Initialise l'anonymisation des modèles pour une nouvelle session"""
+    if 'model_anonymization' not in st.session_state:
+        # Créer un mapping aléatoire des modèles vers des noms anonymes
+        real_models = list(REAL_MODEL_NAMES.keys())
+        anonymous_names = random.sample(ANONYMOUS_NAMES, len(real_models))
+        
+        st.session_state.model_anonymization = {
+            'real_to_anonymous': dict(zip(real_models, anonymous_names)),
+            'anonymous_to_real': dict(zip(anonymous_names, real_models))
+        }
+        
+        # Initialiser les modèles sélectionnés avec des noms anonymes
+        st.session_state.model_left_anonymous = anonymous_names[0]
+        st.session_state.model_right_anonymous = anonymous_names[1]
+
+def get_anonymous_name(real_name):
+    """Retourne le nom anonyme pour un modèle réel"""
+    return st.session_state.model_anonymization['real_to_anonymous'].get(real_name, real_name)
+
+def get_real_name(anonymous_name):
+    """Retourne le nom réel pour un modèle anonyme"""
+    return st.session_state.model_anonymization['anonymous_to_real'].get(anonymous_name, anonymous_name)
+
+def get_available_anonymous_models():
+    """Retourne la liste des modèles disponibles avec leurs noms anonymes"""
+    return list(st.session_state.model_anonymization['anonymous_to_real'].keys())
+
+
 
 # ==================== FIREBASE CONFIGURATION ====================
 
@@ -126,13 +179,18 @@ def save_vote_to_firebase(db, exchange_id, vote_choice, question, model_left, mo
         session_id = get_session_id()
         question_hash = create_question_hash(question)
         
+        # Convertir les noms anonymes vers les vrais noms pour la sauvegarde
+        real_model_left = get_real_name(model_left)
+        real_model_right = get_real_name(model_right)
+        real_vote_choice = get_real_name(vote_choice) if vote_choice != "tie" else vote_choice
+        
         vote_data = {
             "exchange_id": exchange_id,
             "question": question,
             "question_hash": question_hash,
-            "model_left": model_left,
-            "model_right": model_right,
-            "vote": vote_choice,
+            "model_left": real_model_left,
+            "model_right": real_model_right,
+            "vote": real_vote_choice,
             "timestamp": firestore.SERVER_TIMESTAMP,
             "user_session_id": session_id
         }
@@ -319,7 +377,7 @@ def process_claude_query(model_name, messages, system_prompt, tools, api_key, ma
             if "haiku" in model_name.lower():
                 entry_cost = (int(input_tokens) / 1000000) * 0.8    # Vos tarifs Haiku
                 output_cost = (int(output_tokens) / 1000000) * 4.0  # Vos tarifs Haiku
-            elif "sonnet 4" in model_name.lower():
+            elif "sonnet-4" in model_name.lower():
                 entry_cost = (int(input_tokens) / 1000000) * 3.0    # Estimation Sonnet 4
                 output_cost = (int(output_tokens) / 1000000) * 15.0 # Estimation Sonnet 4
             else:  # Sonnet 3.7
@@ -814,8 +872,10 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
     # récupérer la date actuelle
     date = time.strftime("%d/%m/%Y")
     
+    # Convertir le nom anonyme vers le vrai nom pour l'API
+    real_model_name = get_real_name(model_name)
 
-    if model_name == "Claude 3.5 Haiku":
+    if real_model_name == "Claude 3.5 Haiku":
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français et de manière précise.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
@@ -872,7 +932,7 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             temperature
         )
     
-    elif model_name == "Claude 3.7 Sonnet":
+    elif real_model_name == "Claude 3.7 Sonnet":
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français, de manière structurée et très détaillée.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
@@ -927,7 +987,7 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             temperature
         )
     
-    elif model_name == "Claude Sonnet 4":
+    elif real_model_name == "Claude Sonnet 4":
         system_prompt = """Tu es un assistant IA français spécialisé dans le droit français. 
         Tu réponds toujours en français et de manière précise.
         Si il s'agit d'une question juridique, fais au moins une recherche internet.
@@ -983,15 +1043,15 @@ async def process_model_query(model_name, prompt, message_history, anthropic_key
             temperature
         )
     
-    elif model_name == "Google Gemini":
+    elif real_model_name == "Google Gemini":
         # Gemini 2.0 Flash avec web search intégré
         return process_gemini_query(prompt, message_history, gemini_key, max_tokens, temperature, pdf_data)
     
-    elif model_name == "Google Gemini 2.0 Flash + Perplexity":
+    elif real_model_name == "Google Gemini 2.0 Flash + Perplexity":
         # Gemini 2.0 Flash avec Perplexity Search intégré
         return process_gemini_with_perplexity_query(prompt, message_history, gemini_key, perplexity_key, max_tokens, temperature, pdf_data)
     
-    elif model_name == "Perplexity AI":
+    elif real_model_name == "Perplexity AI":
         clean_history = []
         for m in message_history:
             content = m["content"]
@@ -1104,6 +1164,7 @@ def get_vote_stats(firebase_stats=False):
     model_votes = {}
     
     for vote in st.session_state.vote_history:
+        # Utiliser les noms anonymes pour les statistiques locales
         left_model = vote["model_left"]
         right_model = vote["model_right"]
         winner = vote["vote"]
@@ -1132,14 +1193,13 @@ def get_vote_stats(firebase_stats=False):
 
 # ==================== INITIALISATION ====================
 
+# Initialiser l'anonymisation des modèles
+init_model_anonymization()
+
 if 'messages_left' not in st.session_state:
     st.session_state.messages_left = []
 if 'messages_right' not in st.session_state:
     st.session_state.messages_right = []
-if 'model_left' not in st.session_state:
-    st.session_state.model_left = "Claude 3.5 Haiku"
-if 'model_right' not in st.session_state:
-    st.session_state.model_right = "Claude 3.7 Sonnet"
 
 init_voting_system()
 
@@ -1177,39 +1237,104 @@ st.markdown("""
     box-shadow: 0 2px 4px var(--shadow-color);
 }
 
-.haiku-panel {
+.alpha-panel {
     border-left: 4px solid #28a745;
     background-color: rgba(40, 167, 69, 0.1);
 }
 
-.sonnet-panel {
+.beta-panel {
     border-left: 4px solid #007bff;
     background-color: rgba(0, 123, 255, 0.1);
 }
 
-.perplexity-panel {
+.gamma-panel {
     border-left: 4px solid #ff6b35;
     background-color: rgba(255, 107, 53, 0.1);
 }
 
-.gemini-panel {
+.delta-panel {
     border-left: 4px solid #4285f4;
     background-color: rgba(66, 133, 244, 0.1);
 }
 
-.gemini-hybrid-panel {
+.epsilon-panel {
     border-left: 4px solid #34a853;
     background-color: rgba(52, 168, 83, 0.1);
 }
 
-.sonnet4-panel {
+.zeta-panel {
     border-left: 4px solid #8b5cf6;
     background-color: rgba(139, 92, 246, 0.1);
 }
 
-.gemini-pro-panel {
+.eta-panel {
     border-left: 4px solid #f59e0b;
     background-color: rgba(245, 158, 11, 0.1);
+}
+
+.theta-panel {
+    border-left: 4px solid #e11d48;
+    background-color: rgba(225, 29, 72, 0.1);
+}
+
+.iota-panel {
+    border-left: 4px solid #06b6d4;
+    background-color: rgba(6, 182, 212, 0.1);
+}
+
+.kappa-panel {
+    border-left: 4px solid #84cc16;
+    background-color: rgba(132, 204, 22, 0.1);
+}
+
+.lambda-panel {
+    border-left: 4px solid #a855f7;
+    background-color: rgba(168, 85, 247, 0.1);
+}
+
+.mu-panel {
+    border-left: 4px solid #ef4444;
+    background-color: rgba(239, 68, 68, 0.1);
+}
+
+.nu-panel {
+    border-left: 4px solid #f97316;
+    background-color: rgba(249, 115, 22, 0.1);
+}
+
+.xi-panel {
+    border-left: 4px solid #eab308;
+    background-color: rgba(234, 179, 8, 0.1);
+}
+
+.omicron-panel {
+    border-left: 4px solid #22c55e;
+    background-color: rgba(34, 197, 94, 0.1);
+}
+
+.pi-panel {
+    border-left: 4px solid #14b8a6;
+    background-color: rgba(20, 184, 166, 0.1);
+}
+
+.rho-panel {
+    border-left: 4px solid #3b82f6;
+    background-color: rgba(59, 130, 246, 0.1);
+}
+
+.sigma-panel {
+    border-left: 4px solid #6366f1;
+    background-color: rgba(99, 102, 241, 0.1);
+}
+
+.tau-panel {
+    border-left: 4px solid #8b5cf6;
+    background-color: rgba(139, 92, 246, 0.1);
+}
+
+.upsilon-panel {
+    border-left: 4px solid #ec4899;
+    background-color: rgba(236, 72, 153, 0.1);
 }
 
 .stats-box {
@@ -1296,38 +1421,56 @@ st.markdown("""
     margin-top: 0;
     color: var(--text-primary);
 }
+
+.revelation-box {
+    background-color: rgba(255, 215, 0, 0.2);
+    border: 2px solid #ffd700;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 20px 0;
+    text-align: center;
+}
+
+@media (prefers-color-scheme: dark) {
+    .revelation-box {
+        background-color: rgba(255, 215, 0, 0.1);
+        border-color: #b8860b;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ==================== INTERFACE PRINCIPALE ====================
 
-st.title("Assistant Juridique Français - Comparaison Multi-Modèles 🇫🇷⚖️")
-st.subheader("Comparaison côte à côte des modèles IA avec Firebase")
+st.title("Assistant Juridique Français - Comparaison Anonyme 🇫🇷⚖️")
+st.subheader("Comparaison côte à côte des modèles IA avec noms anonymisés")
 
 # ==================== SÉLECTION DES MODÈLES SUR LA PAGE PRINCIPALE ====================
 
 st.markdown('<div class="model-selector">', unsafe_allow_html=True)
 st.markdown("### 🤖 Sélection des modèles à comparer")
 
+available_models = get_available_anonymous_models()
+
 col_model1, col_model2 = st.columns(2)
 
 with col_model1:
     model_left = st.selectbox(
         "🔵 Modèle de gauche",
-        ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Claude Sonnet 4", "Google Gemini", "Google Gemini 2.0 Flash + Perplexity", "Perplexity AI"],
-        index=0,
+        available_models,
+        index=available_models.index(st.session_state.model_left_anonymous),
         key="main_model_left"
     )
-    st.session_state.model_left = model_left
+    st.session_state.model_left_anonymous = model_left
 
 with col_model2:
     model_right = st.selectbox(
         "🔴 Modèle de droite",
-        ["Claude 3.5 Haiku", "Claude 3.7 Sonnet", "Claude Sonnet 4", "Google Gemini", "Google Gemini 2.0 Flash + Perplexity", "Perplexity AI"],
-        index=1,
+        available_models,
+        index=available_models.index(st.session_state.model_right_anonymous),
         key="main_model_right"
     )
-    st.session_state.model_right = model_right
+    st.session_state.model_right_anonymous = model_right
 
 if model_left == model_right:
     st.warning("⚠️ Vous avez sélectionné le même modèle des deux côtés. Choisissez des modèles différents pour une comparaison pertinente.")
@@ -1340,16 +1483,19 @@ anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 perplexity_key = os.getenv("PERPLEXITY_API_KEY", "")
 gemini_key = os.getenv("GEMINI_API_KEY", "")
 
-# Vérification des clés API nécessaires
+# Vérification des clés API nécessaires basée sur les vrais noms
+real_model_left = get_real_name(model_left)
+real_model_right = get_real_name(model_right)
+
 keys_needed = set()
-if model_left.startswith("Claude") or model_right.startswith("Claude"):
+if real_model_left.startswith("Claude") or real_model_right.startswith("Claude"):
     keys_needed.add("anthropic")
-if model_left == "Google Gemini" or model_right == "Google Gemini":
+if real_model_left == "Google Gemini" or real_model_right == "Google Gemini":
     keys_needed.add("gemini")
-if model_left == "Google Gemini 2.0 Flash + Perplexity" or model_right == "Google Gemini 2.0 Flash + Perplexity":
+if real_model_left == "Google Gemini 2.0 Flash + Perplexity" or real_model_right == "Google Gemini 2.0 Flash + Perplexity":
     keys_needed.add("gemini")
     keys_needed.add("perplexity")
-if model_left == "Perplexity AI" or model_right == "Perplexity AI":
+if real_model_left == "Perplexity AI" or real_model_right == "Perplexity AI":
     keys_needed.add("perplexity")
 
 missing_keys = []
@@ -1375,6 +1521,18 @@ GEMINI_API_KEY=votre_clé_gemini
 
 with st.sidebar:
     st.header("Configuration")
+    
+    st.subheader("🎭 Anonymisation")
+    st.info("🤫 Mode anonyme permanent")
+    st.write("Les modèles gardent leurs noms génériques")
+    
+    if st.button("🔄 Nouvelle session anonyme"):
+        # Réinitialiser l'anonymisation
+        for key in ['model_anonymization', 'votes', 'vote_history', 
+                   'messages_left', 'messages_right']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
     
     st.subheader("🔥 Firebase")
     if FIREBASE_AVAILABLE:
@@ -1416,6 +1574,7 @@ with st.sidebar:
                         total = perf["wins"] + perf["losses"] + perf["ties"]
                         if total > 0:
                             win_rate = (perf["wins"] / total) * 100
+                            # Afficher le nom anonyme dans les stats
                             st.write(f"**{model}:** {win_rate:.0f}% ({perf['wins']}/{total})")
             else:
                 st.info("Aucun vote local")
@@ -1464,31 +1623,60 @@ with st.sidebar:
         st.error("❌ Clé GEMINI_API_KEY manquante dans .env")
     
     debug_mode = st.checkbox("Mode debug", value=False)
-    
-    if st.button("🗑️ Vider l'historique local"):
-        st.session_state.messages_left = []
-        st.session_state.messages_right = []
-        st.session_state.votes = {}
-        st.session_state.vote_history = []
-        st.rerun()
 
 # ==================== FONCTIONS D'AFFICHAGE ====================
+
+def get_panel_class(model_name):
+    """Retourne la classe CSS appropriée pour un modèle"""
+    # Utiliser le nom anonyme pour déterminer la couleur
+    model_lower = model_name.lower()
+    if "alpha" in model_lower:
+        return "alpha-panel"
+    elif "beta" in model_lower:
+        return "beta-panel"
+    elif "gamma" in model_lower:
+        return "gamma-panel"
+    elif "delta" in model_lower:
+        return "delta-panel"
+    elif "epsilon" in model_lower:
+        return "epsilon-panel"
+    elif "zeta" in model_lower:
+        return "zeta-panel"
+    elif "eta" in model_lower:
+        return "eta-panel"
+    elif "theta" in model_lower:
+        return "theta-panel"
+    elif "iota" in model_lower:
+        return "iota-panel"
+    elif "kappa" in model_lower:
+        return "kappa-panel"
+    elif "lambda" in model_lower:
+        return "lambda-panel"
+    elif "mu" in model_lower:
+        return "mu-panel"
+    elif "nu" in model_lower:
+        return "nu-panel"
+    elif "xi" in model_lower:
+        return "xi-panel"
+    elif "omicron" in model_lower:
+        return "omicron-panel"
+    elif "pi" in model_lower:
+        return "pi-panel"
+    elif "rho" in model_lower:
+        return "rho-panel"
+    elif "sigma" in model_lower:
+        return "sigma-panel"
+    elif "tau" in model_lower:
+        return "tau-panel"
+    elif "upsilon" in model_lower:
+        return "upsilon-panel"
+    else:
+        return "model-panel"
 
 def display_messages(messages, model_name):
     for message in messages:
         with st.chat_message(message["role"]):
-            if "haiku" in model_name.lower():
-                panel_class = "haiku-panel"
-            elif "sonnet" in model_name.lower():
-                panel_class = "sonnet-panel"
-            elif "perplexity" in model_name.lower():
-                panel_class = "perplexity-panel"
-            elif "gemini" in model_name.lower() and "perplexity" in model_name.lower():
-                panel_class = "gemini-hybrid-panel"
-            elif "gemini" in model_name.lower():
-                panel_class = "gemini-panel"
-            else:
-                panel_class = "model-panel"
+            panel_class = get_panel_class(model_name)
             
             st.markdown(f'<div class="model-panel {panel_class}">', unsafe_allow_html=True)
             
@@ -1518,9 +1706,12 @@ def display_messages(messages, model_name):
             # Afficher les statistiques si disponibles
             if message.get("stats"):
                 stats = message["stats"]
+                # Afficher le nom anonyme dans les stats
+                display_model = model_name
+                
                 st.markdown(f"""
                 <div class="stats-box">
-                🤖 {stats.get('model', 'Modèle')} | 
+                🤖 {display_model} | 
                 ⏱️ {stats.get('response_time', 0)}s | 
                 🔤 In: {stats.get('input_tokens', 0)} | 
                 🔤 Out: {stats.get('output_tokens', 0)} | 
@@ -1617,7 +1808,10 @@ with col2:
 # ==================== CHAT INPUT AVEC SUPPORT DES FICHIERS PDF ====================
 
 # Note sur l'incompatibilité avec Perplexity
-if model_left == "Perplexity AI" or model_right == "Perplexity AI":
+real_left = get_real_name(model_left)
+real_right = get_real_name(model_right)
+
+if real_left == "Perplexity AI" or real_right == "Perplexity AI":
     st.info("📄 **Note :** Perplexity AI ne supporte pas les documents PDF. Les fichiers joints seront ignorés pour ce modèle.")
 
 # Chat input avec support des fichiers PDF
@@ -1655,7 +1849,7 @@ if prompt:
             st.warning("⚠️ Seuls les fichiers PDF sont supportés. Les autres fichiers ont été ignorés.")
     
     # Créer le contenu du message
-    if pdf_data and (model_left != "Perplexity AI" or model_right != "Perplexity AI"):
+    if pdf_data and (real_left != "Perplexity AI" or real_right != "Perplexity AI"):
         message_content_left = [
             {"type": "text", "text": user_text}
         ]
@@ -1664,7 +1858,7 @@ if prompt:
         ]
         
         # Ajouter le document seulement pour les modèles qui le supportent
-        if model_left != "Perplexity AI":
+        if real_left != "Perplexity AI":
             message_content_left.append({
                 "type": "document", 
                 "source": {
@@ -1674,7 +1868,7 @@ if prompt:
                 }
             })
         
-        if model_right != "Perplexity AI":
+        if real_right != "Perplexity AI":
             message_content_right.append({
                 "type": "document", 
                 "source": {
@@ -1703,17 +1897,17 @@ if prompt:
     with col1:
         with st.chat_message("user"):
             st.markdown(user_text)
-            if pdf_data and model_left != "Perplexity AI":
+            if pdf_data and real_left != "Perplexity AI":
                 st.info(f"📎 {len(uploaded_files)} document(s) PDF joint(s)")
-            elif pdf_data and model_left == "Perplexity AI":
+            elif pdf_data and real_left == "Perplexity AI":
                 st.warning("⚠️ PDF ignoré (Perplexity ne le supporte pas)")
     
     with col2:
         with st.chat_message("user"):
             st.markdown(user_text)
-            if pdf_data and model_right != "Perplexity AI":
+            if pdf_data and real_right != "Perplexity AI":
                 st.info(f"📎 {len(uploaded_files)} document(s) PDF joint(s)")
-            elif pdf_data and model_right == "Perplexity AI":
+            elif pdf_data and real_right == "Perplexity AI":
                 st.warning("⚠️ PDF ignoré (Perplexity ne le supporte pas)")
     
     # Traiter les réponses des modèles
@@ -1722,9 +1916,9 @@ if prompt:
             with st.chat_message("assistant"):
                 with st.spinner(f"🤔 {model_left} réfléchit..."):
                     if debug_mode:
-                        st.write(f"🔍 Debug: Envoi de la requête à {model_left}...")
+                        st.write(f"🔍 Debug: Envoi de la requête à {model_left} ({real_left})...")
                     
-                    pdf_for_left = pdf_data if model_left != "Perplexity AI" else None
+                    pdf_for_left = pdf_data if real_left != "Perplexity AI" else None
                     
                     content_left, stats_left, error_left = await process_model_query(
                         model_left, 
@@ -1751,9 +1945,12 @@ if prompt:
                             
                             total_cost = stats_left['total_cost'] + pdf_cost
                             
+                            # Masquer le vrai nom du modèle - garder anonyme
+                            display_model = model_left
+                            
                             st.markdown(f"""
                             <div class="stats-box">
-                            🤖 {stats_left['model']} | 
+                            🤖 {display_model} | 
                             ⏱️ {stats_left['response_time']}s | 
                             🔤 In: {stats_left['input_tokens']} | 
                             🔤 Out: {stats_left['output_tokens']} | 
@@ -1795,9 +1992,9 @@ if prompt:
             with st.chat_message("assistant"):
                 with st.spinner(f"🤔 {model_right} réfléchit..."):
                     if debug_mode:
-                        st.write(f"🔍 Debug: Envoi de la requête à {model_right}...")
+                        st.write(f"🔍 Debug: Envoi de la requête à {model_right} ({real_right})...")
                     
-                    pdf_for_right = pdf_data if model_right != "Perplexity AI" else None
+                    pdf_for_right = pdf_data if real_right != "Perplexity AI" else None
                     
                     content_right, stats_right, error_right = await process_model_query(
                         model_right, 
@@ -1824,9 +2021,12 @@ if prompt:
                             
                             total_cost = stats_right['total_cost'] + pdf_cost
                             
+                            # Masquer le vrai nom du modèle - garder anonyme
+                            display_model = model_right
+                            
                             st.markdown(f"""
                             <div class="stats-box">
-                            🤖 {stats_right['model']} | 
+                            🤖 {display_model} | 
                             ⏱️ {stats_right['response_time']}s | 
                             🔤 In: {stats_right['input_tokens']} | 
                             🔤 Out: {stats_right['output_tokens']} | 
@@ -1941,15 +2141,20 @@ if prompt:
 if len(st.session_state.messages_left) > 1 and len(st.session_state.messages_right) > 1:
     st.markdown("---")
     st.header("🗳️ Votez pour les meilleures réponses")
+    
+    st.info("🎭 **Évaluation anonyme** : Votez uniquement sur la qualité des réponses !")
+    
     display_completed_votes()
 
 # ==================== FOOTER ====================
 
 st.markdown("---")
+
+
 st.markdown(f"""
 <div style='text-align: center; color: #666; font-size: 0.9em;'>
+    <p>🎭 Mode anonyme : Les modèles sont évalués sans biais de marque</p>
     <p>🗳️ Vos votes sont sauvegardés {"dans Firebase" if st.session_state.firebase_enabled and st.session_state.firebase_db else "localement"}</p>
     <p>📎 Glissez-déposez vos fichiers PDF directement dans la zone de chat</p>
-    <p>🤖 Modèles disponibles : Claude 3.5 Haiku, Claude 3.7 Sonnet, Claude Sonnet 4, Google Gemini 2.0 Flash, Google Gemini 2.0 Flash + Perplexity, Perplexity AI</p>
 </div>
 """, unsafe_allow_html=True)
