@@ -377,7 +377,8 @@ def main():
     user_question = st.chat_input(
         "💬 Posez votre question juridique...",
         key="chat_input",
-        accept_file="multiple"
+        accept_file=True,
+        file_type=["pdf","txt"]
     )
         
     # Gestion de l'historique des conversations
