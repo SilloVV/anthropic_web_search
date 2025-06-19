@@ -1,498 +1,471 @@
 import streamlit as st
-import time
-from dotenv import load_dotenv
-import os
 import base64
-import tempfile
-import re
-from datetime import datetime
-
-# Import Gemini
+import os
+from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+import time
+import pathlib
 
-# Configuration de la page Streamlit
-st.set_page_config(
-    page_title="Assistant Juridique IA - Gemini 2.0 Flash",
-    page_icon="⚖️",
-    layout="wide"
-)
-
-# Chargement des variables d'environnement
+# Charger les variables d'environnement depuis le fichier .env
 load_dotenv()
 
-# ==================== FONCTIONS UTILITAIRES ====================
-
-def encode_pdf_to_base64(uploaded_files):
-    """Encode un ou plusieurs fichiers PDF téléchargés en base64."""
-    if uploaded_files is not None and len(uploaded_files) > 0:
-        base64_pdf = ""
-        for file in uploaded_files:
-            pdf_bytes = file.getvalue()
-            base64_pdf += base64.b64encode(pdf_bytes).decode('utf-8')
-        return base64_pdf
-    return None
-
-def process_gemini_query(prompt, message_history, gemini_key, max_tokens, temperature, pdf_data=None):
-    """Traite une requête avec Google Gemini 2.0 Flash et web search."""
-    try:
-        # Configuration de Gemini
-        client = genai.Client(api_key=gemini_key)
-        
-        start_time = time.time()
-        
-        # Préparer le contexte système pour le droit français
-        system_context = """Tu es un assistant IA français spécialisé dans le droit français. 
-        Tu réponds toujours en français et de manière précise.
-        Si une date est mentionnée, vérifie SYSTÉMATIQUEMENT si elle est dans le futur avec l'outil `is_date_in_future`.
-        Pour les questions juridiques, effectue une recherche web pour trouver les informations les plus récentes.
-        Privilégie les sources officielles françaises comme legifrance.gouv.fr, service-public.fr, etc.
-        Cite tes sources de manière claire avec les URLs.
-        Pour toute question relative à la date, la date d'aujourd'hui est le """ + time.strftime("%d/%m/%Y") + "."
-        
-        # Préparer l'historique de conversation
-        conversation_context = ""
-        for msg in message_history[-6:]:  # Limiter aux 6 derniers messages
-            if msg["role"] == "user":
-                content = msg["content"]
-                if isinstance(content, list):
-                    content = next((item.get("text", "") for item in content 
-                                   if isinstance(item, dict) and item.get("type") == "text"), "")
-                conversation_context += f"User: {content[:200]}{'...' if len(content) > 200 else ''}\n"
-            elif msg["role"] == "assistant":
-                content = msg["content"]
-                if isinstance(content, str) and content:
-                    # Tronquer les réponses longues
-                    truncated_content = content[:300] + "..." if len(content) > 300 else content
-                    conversation_context += f"Assistant: {truncated_content}\n"
-        
-        # Construire le prompt complet
-        full_prompt = f"{system_context}\n\n"
-        if conversation_context:
-            full_prompt += f"Contexte de conversation récent:\n{conversation_context}\n"
-        full_prompt += f"Nouvelle question: {prompt}"
-        
-        # Préparer les contenus pour la requête
-        contents = [full_prompt]
-        
-        # Gérer le PDF si présent
-        if pdf_data:
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-                    pdf_bytes = base64.b64decode(pdf_data)
-                    temp_file.write(pdf_bytes)
-                    temp_path = temp_file.name
-                
-                contents.append(f"[Document PDF joint - taille: {len(pdf_bytes)} bytes]")
-                os.unlink(temp_path)
-                
-            except Exception as e:
-                print(f"Erreur traitement PDF: {e}")
-        
-        # Envoyer la requête avec web search
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
-            contents=contents
-        )
-        
-        response_time = round(time.time() - start_time, 2)
-        
-        # Extraire le contenu
-        content = response.text if hasattr(response, 'text') and response.text else "Pas de réponse générée."
-        
-        # Estimer les recherches web
-        web_searches = 1 if any(url_indicator in content.lower() 
-                               for url_indicator in ['http', 'www.', '.fr', '.com', 'source']) else 0
-        
-        # Estimation des tokens
-        input_tokens = len(full_prompt) // 4
-        output_tokens = len(content) // 4
-        
-        # Calculer les coûts pour Gemini 2.0 Flash
-        input_cost = (input_tokens / 1000000) * 0.1   # $0.1 per 1M input tokens
-        output_cost = (output_tokens / 1000000) * 0.4  # $0.4 per 1M output tokens
-        search_cost = web_searches * 0.005  # Estimation web search
-        
-        # Coût PDF
-        pdf_cost = 0
-        if pdf_data:
-            pdf_size_mb = len(pdf_data) / (1024 * 1024)
-            pdf_cost = pdf_size_mb * 0.01
-        
-        total_cost = input_cost + output_cost + search_cost + pdf_cost
-        
-        # Extraire les sources/URLs du contenu
-        sources = []
-        urls = re.findall(r'https?://[^\s\)\]]+', content)
-        for i, url in enumerate(urls[:5]):  # Limiter à 5 sources
-            sources.append({
-                "title": f"Source {i+1}",
-                "url": url.rstrip('.,)'),
-                "text": ""
-            })
-        
-        # Chercher des mentions de sources dans le texte
-        source_patterns = [
-            r'(?:selon|d\'après|source\s*:\s*)([^.]+)',
-            r'(?:legifrance|service-public|conseil-etat|conseil-constitutionnel)',
-            r'(?:article\s+\d+|code\s+\w+)'
-        ]
-        
-        for pattern in source_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            for match in matches[:3]:
-                if isinstance(match, str) and len(match) > 10:
-                    sources.append({
-                        "title": f"Référence juridique",
-                        "url": "",
-                        "text": match.strip()[:200]
-                    })
-        
-        stats = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "web_searches": web_searches,
-            "response_time": response_time,
-            "model": "Google Gemini 2.0 Flash",
-            "sources": sources,
-            "entry_cost": input_cost,
-            "output_cost": output_cost,
-            "search_cost": search_cost,
-            "total_cost": total_cost
-        }
-        
-        return content, stats, None
-        
-    except Exception as e:
-        error_msg = f"Erreur avec Gemini: {str(e)}"
-        return None, None, error_msg
-
-# ==================== INITIALISATION ====================
-
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
+# Configuration de la page
+st.set_page_config(
+    page_title="Assistant Juridique Français",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # CSS personnalisé
 st.markdown("""
 <style>
-:root {
-    --bg-primary: #ffffff;
-    --bg-secondary: #f8f9fa;
-    --text-primary: #333333;
-    --border-color: #e0e0e0;
-    --accent-color: #4285f4;
-}
-
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg-primary: #1e1e1e;
-        --bg-secondary: #2d2d2d;
-        --text-primary: #ffffff;
-        --border-color: #404040;
-        --accent-color: #66b3ff;
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f4e79;
+        text-align: center;
+        margin-bottom: 2rem;
+        font-weight: bold;
     }
-}
-
-.gemini-panel {
-    padding: 20px;
-    border-radius: 12px;
-    margin: 15px 0;
-    background: linear-gradient(135deg, rgba(66, 133, 244, 0.1), rgba(66, 133, 244, 0.05));
-    border-left: 4px solid var(--accent-color);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.stats-container {
-    background-color: var(--bg-secondary);
-    padding: 15px;
-    border-radius: 8px;
-    margin: 10px 0;
-    border: 1px solid var(--border-color);
-}
-
-.sources-container {
-    background: linear-gradient(135deg, rgba(52, 168, 83, 0.1), rgba(52, 168, 83, 0.05));
-    padding: 15px;
-    border-radius: 8px;
-    margin: 15px 0;
-    border-left: 3px solid #34a853;
-    border: 1px solid var(--border-color);
-    max-height: 400px;
-    overflow-y: auto;
-}
-
-.source-item {
-    background-color: var(--bg-primary);
-    margin: 10px 0;
-    padding: 12px;
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
-}
-
-.source-item a {
-    color: var(--accent-color);
-    text-decoration: none;
-    font-weight: 500;
-}
-
-.source-item a:hover {
-    text-decoration: underline;
-}
-
-.header-container {
-    text-align: center;
-    padding: 20px;
-    background: linear-gradient(135deg, var(--accent-color), #34a853);
-    border-radius: 12px;
-    margin-bottom: 30px;
-    color: white;
-}
-
-.upload-zone {
-    background-color: var(--bg-secondary);
-    padding: 20px;
-    border-radius: 8px;
-    border: 2px dashed var(--border-color);
-    text-align: center;
-    margin: 15px 0;
-}
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .stTextArea textarea {
+        font-size: 1.1rem;
+    }
+    .response-container {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border-left: 4px solid #1f4e79;
+        margin: 1rem 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        border: 1px solid #ffeaa7;
+        border-radius: 5px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== INTERFACE PRINCIPALE ====================
+# Fonction pour estimer le coût
+def estimate_cost(input_tokens=0, output_tokens=0, web_searches=0):
+    """Estime le coût basé sur les tokens et recherches web"""
+    input_cost = (input_tokens / 1_000_000) * 3.0  # 3$ par million de tokens d'input
+    output_cost = (output_tokens / 1_000_000) * 15.0  # 15$ par million de tokens d'output
+    search_cost = web_searches * 0.035  # 0.035$ par recherche internet
+    
+    total_cost = input_cost + output_cost + search_cost
+    return {
+        'input_cost': input_cost,
+        'output_cost': output_cost,
+        'search_cost': search_cost,
+        'total_cost': total_cost,
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'web_searches': web_searches
+    }
 
-# Header
-st.markdown("""
-<div class="header-container">
-    <h1>🤖 Assistant Juridique IA</h1>
-    <p>Powered by Google Gemini 2.0 Flash avec recherche web intégrée</p>
-</div>
-""", unsafe_allow_html=True)
 
-# Sidebar Configuration
-with st.sidebar:
-    st.header("⚙️ Configuration")
+# Fonction pour extraire les citations des métadonnées
+def extract_citations(response_metadata):
+    """Extrait les citations des métadonnées de grounding"""
+    citations = {}
     
-    # Vérification de la clé API
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
-    if gemini_key:
-        st.success("✅ Clé Gemini chargée")
-    else:
-        st.error("❌ Clé GEMINI_API_KEY manquante")
-        gemini_key = st.text_input("Clé API Gemini:", type="password")
-    
-    st.subheader("🎛️ Paramètres")
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.3, 0.1)
-    max_tokens = st.slider("Tokens max", 500, 4000, 3500, 100)
-    
-    st.subheader("📊 Statistiques de session")
-    if st.session_state.messages:
-        user_messages = [m for m in st.session_state.messages if m["role"] == "user"]
-        assistant_messages = [m for m in st.session_state.messages if m["role"] == "assistant"]
+    if hasattr(response_metadata, 'grounding_metadata') and response_metadata.grounding_metadata:
+        grounding_metadata = response_metadata.grounding_metadata
         
-        st.metric("Questions posées", len(user_messages))
-        st.metric("Réponses générées", len(assistant_messages))
-        
-        # Calcul du coût total
-        total_cost = 0
-        total_time = 0
-        for msg in assistant_messages:
-            if msg.get("stats"):
-                total_cost += msg["stats"].get("total_cost", 0)
-                total_time += msg["stats"].get("response_time", 0)
-        
-        st.metric("Coût total", f"${total_cost:.4f}")
-        st.metric("Temps total", f"{total_time:.1f}s")
+        # Extraire les chunks de grounding (sources)
+        if hasattr(grounding_metadata, 'grounding_chunks') and grounding_metadata.grounding_chunks:
+            for grounding_chunk in grounding_metadata.grounding_chunks:
+                if (hasattr(grounding_chunk, 'web') and 
+                    grounding_chunk.web is not None):
+                    
+                    web_info = grounding_chunk.web
+                    title = getattr(web_info, 'title', 'Source inconnue')
+                    uri = getattr(web_info, 'uri', '')
+                    
+                    # Éviter les doublons en utilisant l'URI comme clé
+                    if uri and uri not in citations:
+                        citations[uri] = {
+                            'title': title,
+                            'uri': uri
+                        }
     
-    st.subheader("🧹 Actions")
-    if st.button("Vider l'historique"):
-        st.session_state.messages = []
-        st.rerun()
-    
-    # Informations sur Gemini
-    st.subheader("ℹ️ À propos")
-    st.info("""
-    **Gemini 2.0 Flash** dispose de :
-    - 🌐 Recherche web native
-    - 📄 Support PDF complet  
-    - 🇫🇷 Expertise droit français
-    - 💰 Coûts optimisés
-    - ⚡ Réponses rapides
-    """)
+    return citations
 
-# Zone d'upload
-st.subheader("📎 Upload de documents (optionnel)")
-uploaded_files = st.file_uploader(
-    "Glissez-déposez vos fichiers PDF ici",
-    type=["pdf"],
-    accept_multiple_files=True,
-    help="Téléchargez des documents PDF pour enrichir l'analyse"
-)
-
-pdf_data = None
-if uploaded_files:
-    pdf_data = encode_pdf_to_base64(uploaded_files)
-    st.success(f"✅ {len(uploaded_files)} fichier(s) PDF chargé(s)")
+# Fonction pour formater les citations
+def format_citations(citations):
+    """Formate les citations pour l'affichage"""
+    if not citations:
+        return ""
     
-    # Affichage des fichiers
-    with st.expander("📋 Fichiers chargés", expanded=False):
-        for file in uploaded_files:
-            st.write(f"📄 **{file.name}** - {file.size / 1024:.1f} KB")
+    citations_text = "\n\n---\n\n### 📚 Sources utilisées :\n\n"
+    
+    for i, (uri, citation) in enumerate(citations.items(), 1):
+        citations_text += f"**[{i}]** [{citation['title']}]({citation['uri']})\n\n"
+    
+    return citations_text
 
-# Affichage de l'historique des messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        if message["role"] == "assistant":
-            st.markdown('<div class="gemini-panel">', unsafe_allow_html=True)
-        
-        # Affichage du contenu
-        if isinstance(message["content"], list):
-            text_content = next((item.get("text", "") for item in message["content"] 
-                               if isinstance(item, dict) and item.get("type") == "text"), "")
-            st.markdown(text_content)
-            if any(item.get("type") == "document" for item in message["content"] if isinstance(item, dict)):
-                st.info("📎 Document PDF analysé")
-        else:
-            st.markdown(message["content"])
-        
-        # Affichage des statistiques
-        if message.get("stats"):
-            stats = message["stats"]
-            st.markdown(f"""
-            <div class="stats-container">
-                <strong>📊 Statistiques:</strong><br>
-                🤖 {stats['model']} | ⏱️ {stats['response_time']}s | 
-                🔤 Tokens: {stats['input_tokens']}→{stats['output_tokens']} | 
-                🔍 {stats['web_searches']} recherche(s) | 💲 ${stats['total_cost']:.4f}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Affichage des sources
-            if stats.get('sources'):
-                st.markdown('<div class="sources-container">', unsafe_allow_html=True)
-                st.markdown("### 📚 Sources consultées:")
+# Fonction pour traiter les fichiers uploadés
+def process_uploaded_files(uploaded_files):
+    """Traite les fichiers uploadés et retourne les parties pour Gemini"""
+    file_parts = []
+    
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            try:
+                # Lire les bytes du fichier
+                file_bytes = uploaded_file.read()
                 
-                for i, source in enumerate(stats['sources']):
-                    title = source.get('title', 'Source inconnue')
-                    url = source.get('url', '')
-                    text = source.get('text', '')
-                    
-                    source_html = f'<div class="source-item">'
-                    source_html += f'<strong>{title}</strong><br>'
-                    
-                    if url:
-                        source_html += f'<a href="{url}" target="_blank">🔗 {url}</a><br>'
-                    
-                    if text:
-                        source_html += f'<em>"{text}"</em>'
-                    
-                    source_html += '</div>'
-                    st.markdown(source_html, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-        
-        if message["role"] == "assistant":
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# Chat input
-if prompt := st.chat_input("Posez votre question juridique..."):
-    if not gemini_key:
-        st.error("❌ Veuillez configurer votre clé API Gemini dans la sidebar")
-        st.stop()
-    
-    # Créer le contenu du message
-    if pdf_data:
-        message_content = [
-            {"type": "text", "text": prompt},
-            {
-                "type": "document", 
-                "source": {
-                    "type": "base64", 
-                    "media_type": "application/pdf", 
-                    "data": pdf_data
+                # Déterminer le type MIME basé sur l'extension
+                file_extension = uploaded_file.name.lower().split('.')[-1]
+                mime_type_map = {
+                    'pdf': 'application/pdf',
+                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'doc': 'application/msword',
+                    'txt': 'text/plain',
+                    'jpg': 'image/jpeg',
+                    'jpeg': 'image/jpeg',
+                    'png': 'image/png',
+                    'gif': 'image/gif',
+                    'bmp': 'image/bmp'
                 }
-            }
-        ]
-    else:
-        message_content = prompt
-    
-    # Ajouter le message utilisateur
-    st.session_state.messages.append({"role": "user", "content": message_content})
-    
-    # Afficher le message utilisateur
-    with st.chat_message("user"):
-        st.markdown(prompt)
-        if pdf_data:
-            st.info(f"📎 {len(uploaded_files)} document(s) PDF joint(s)")
-    
-    # Traiter la réponse
-    with st.chat_message("assistant"):
-        with st.spinner("🤔 Gemini réfléchit et recherche..."):
-            content, stats, error = process_gemini_query(
-                prompt, 
-                st.session_state.messages[:-1],  # Exclure le nouveau message
-                gemini_key, 
-                max_tokens, 
-                temperature, 
-                pdf_data
-            )
-            
-            if error:
-                st.error(f"❌ {error}")
-            elif content:
-                st.markdown('<div class="gemini-panel">', unsafe_allow_html=True)
-                st.markdown(content)
                 
-                if stats:
-                    st.markdown(f"""
-                    <div class="stats-container">
-                        <strong>📊 Statistiques:</strong><br>
-                        🤖 {stats['model']} | ⏱️ {stats['response_time']}s | 
-                        🔤 Tokens: {stats['input_tokens']}→{stats['output_tokens']} | 
-                        🔍 {stats['web_searches']} recherche(s) | 💲 ${stats['total_cost']:.4f}
-                        {"| 📄 PDF analysé" if pdf_data else ""}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Affichage des sources
-                    if stats.get('sources'):
-                        st.markdown('<div class="sources-container">', unsafe_allow_html=True)
-                        st.markdown("### 📚 Sources consultées:")
-                        
-                        for i, source in enumerate(stats['sources']):
-                            title = source.get('title', 'Source inconnue')
-                            url = source.get('url', '')
-                            text = source.get('text', '')
-                            
-                            source_html = f'<div class="source-item">'
-                            source_html += f'<strong>{title}</strong><br>'
-                            
-                            if url:
-                                source_html += f'<a href="{url}" target="_blank">🔗 {url}</a><br>'
-                            
-                            if text:
-                                source_html += f'<em>"{text}"</em>'
-                            
-                            source_html += '</div>'
-                            st.markdown(source_html, unsafe_allow_html=True)
-                        
-                        st.markdown('</div>', unsafe_allow_html=True)
+                mime_type = mime_type_map.get(file_extension, 'application/octet-stream')
                 
-                st.markdown('</div>', unsafe_allow_html=True)
+                # Créer une partie pour Gemini
+                file_part = types.Part.from_bytes(
+                    data=file_bytes,
+                    mime_type=mime_type
+                )
+                file_parts.append(file_part)
                 
-                # Ajouter à l'historique
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": content,
-                    "stats": stats
-                })
-            else:
-                st.error("❌ Aucune réponse générée")
+                # Afficher les informations du fichier
+                st.info(f"📁 Fichier traité : {uploaded_file.name} ({len(file_bytes)} bytes)")
+                
+            except Exception as e:
+                st.error(f"❌ Erreur lors du traitement du fichier {uploaded_file.name}: {str(e)}")
+    
+    return file_parts
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style='text-align: center; color: #666; font-size: 0.9em;'>
-    <p>🤖 Propulsé par Google Gemini 2.0 Flash | 🌐 Recherche web native | 📄 Support PDF complet</p>
-    <p>⚖️ Spécialisé en droit français | 💬 Historique de conversation conservé</p>
-</div>
-""", unsafe_allow_html=True)
+# Fonction pour générer la réponse
+def generate_legal_response(chat_input_value):
+    """Génère une réponse juridique en utilisant l'API Gemini"""
+    try:
+        # Chargement des variables d'environnement
+        load_dotenv()
+        
+        # Vérification de la clé API
+        api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            st.error("❌ Clé API GEMINI_API_KEY non trouvée. Veuillez la configurer dans le fichier .env ou les secrets Streamlit.")
+            return None
+        
+        # Initialisation du client
+        client = genai.Client(api_key=api_key)
+        model = "gemini-2.5-pro-preview-06-05"
+        
+        # Extraire le texte et les fichiers du chat_input
+        if isinstance(chat_input_value, str):
+            # Si c'est juste une string (exemple de question)
+            question_text = chat_input_value
+            uploaded_files = []
+        else:
+            # Si c'est un ChatInputValue avec potentiellement des fichiers
+            question_text = chat_input_value.text if hasattr(chat_input_value, 'text') else str(chat_input_value)
+            uploaded_files = chat_input_value.files if hasattr(chat_input_value, 'files') else []
+        
+        # Traiter les fichiers uploadés
+        file_parts = process_uploaded_files(uploaded_files)
+        
+        # Construire les parties du contenu
+        content_parts = []
+        
+        # Ajouter les fichiers en premier
+        content_parts.extend(file_parts)
+        
+        # Ajouter le texte de la question
+        content_parts.append(types.Part.from_text(text=question_text))
+        
+        # Configuration du contenu
+        contents = [
+            types.Content(
+                role="user",
+                parts=content_parts,
+            ),
+        ]
+        
+        # Configuration des outils
+        tools = [
+            types.Tool(url_context=types.UrlContext()),
+            types.Tool(google_search=types.GoogleSearch()),
+        ]
+        
+        # date d'aujourd'hui 
+        today = time.strftime("%Y-%m-%d")
+        # Configuration de génération
+        generate_content_config = types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(
+                thinking_budget=-1,
+            ),
+            tools=tools,
+            response_mime_type="text/plain",
+            system_instruction=[
+                types.Part.from_text(text="""Votre Rôle : Vous êtes un assistant de recherche juridique IA de premier ordre. Votre mission est de simuler une recherche juridique exhaustive et de haute qualité, en fournissant des réponses rapides, fiables et précisément sourcées, à l'image des meilleures plateformes spécialisées.
+Voici la date d'aujourd'hui : {today}
+Votre Processus de Recherche Simulé :
+Lorsque je vous pose une question, vous simulerez une recherche approfondie en consultant systématiquement les sources de référence du droit français et européen suivantes :
+Sources Législatives et Réglementaires :
+Les codes, lois et décrets consolidés sur Légifrance.
+Sources Jurisprudentielles :
+La jurisprudence de la Cour de cassation (ordres judiciaire).
+La jurisprudence du Conseil d'État (ordre administratif).
+Les décisions pertinentes des Cours d'appel.
+Sources Doctrinales :
+Les bases de données juridiques de premier plan comme Dalloz.fr, Lexis 360 et Lextenso.
+Les articles de revues juridiques spécialisées (ex: Recueil Dalloz, Semaine Juridique - JCP).
+Sources Institutionnelles et Pratiques :
+Les fiches pratiques et les informations des sites gouvernementaux officiels comme service-public.fr et les sites des ministères.
+Les analyses et commentaires publiés sur les blogs d'avocats ou d'universitaires reconnus pour leur expertise dans le domaine concerné.
+Vos Principes de Réponse :
+Clarté et Détails : Rédigez une réponse claire, précise et allant au détail (long). .
+Fiabilité et Précision : Assurez-vous que chaque information est vérifiée à travers les sources simulées. Si une information est incertaine ou si les sources sont contradictoires, signalez-le explicitement. N'inventez jamais une réponse.
+Sourçage Rigoureux : Citez systématiquement vos sources ( NUMERO ET DATE INCLUS si possible) pour chaque information clé. Utilisez le format [Source, Année] (ex: [Cour de cassation, 2e civ., 15 mai 2023], [Dalloz.fr, 2022]) ou une URL directe si elle est pertinente et stable. Si aucune source crédible n'a pu être identifiée, indiquez [Source indisponible].
+Neutralité : Adoptez un ton neutre et factuel.
+Format de Réponse Obligatoire :
+Résumé :
+Une explication bien structurée, synthétique et directe.
+Citations :
+[Nom de la source, Année]
+[Lien direct si tu es sûr à plus de 95% de sa véracité et qu'il ne s'agit pas d'une jurisprudence]""".format(today=today)),
+            ],
+        )
+        
+        # Génération de la réponse avec estimation des coûts et extraction des citations
+        response_text = ""
+        estimated_web_searches = 2  # Estimation basée sur l'utilisation des outils de recherche
+        citations = {}
+        
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        )
+        
+        # Extraire le texte de la réponse
+        if response.text:
+            response_text = response.text
+        
+        # Extraire les citations si disponibles
+        if hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'grounding_metadata'):
+                citations = extract_citations(candidate)
+        
+        # Estimation des coûts
+        # Extraire les tokens usage_metadata
+                if (hasattr(response, 'usage_metadata') and 
+                    response.usage_metadata is not None):
+                    
+                    usage = response.usage_metadata
+                    input_tokens = getattr(usage, 'prompt_token_count', 0)
+                    output_tokens = getattr(usage, 'candidates_token_count', 0)
+        
+        # Ajouter les tokens des fichiers (estimation approximative)
+        for file_part in file_parts:
+            input_tokens += 1000  # Estimation moyenne par fichier
+        
+        cost_info = estimate_cost(input_tokens, output_tokens, estimated_web_searches)
+        
+        # Mettre à jour le coût total de la session
+        if 'total_session_cost' in st.session_state:
+            st.session_state.total_session_cost += cost_info['total_cost']
+        
+        # Ajouter les citations à la réponse
+        citations_display = format_citations(citations)
+        
+        # Ajouter les informations de coût à la réponse
+        cost_display = f"""
+
+---
+        
+### 💰 Coût estimé de cette requête :
+- **Tokens d'entrée** : {cost_info['input_tokens']:,} tokens → ${cost_info['input_cost']:.4f}
+- **Tokens de sortie** : {cost_info['output_tokens']:,} tokens → ${cost_info['output_cost']:.4f}
+- **Recherches web** : {cost_info['web_searches']} recherche(s) → ${cost_info['search_cost']:.4f}
+- **🏷️ Total estimé** : **${cost_info['total_cost']:.4f}**
+
+        """
+        
+        # Construire la réponse finale avec citations et coûts
+        final_response = response_text + citations_display + cost_display
+        
+        return final_response
+        
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la génération de la réponse : {str(e)}")
+        return None
+
+# Interface principale
+def main():
+    # En-tête
+    st.markdown('<div class="main-header">⚖️ Assistant Juridique Français</div>', unsafe_allow_html=True)
+    
+
+    # Sidebar avec informations
+    with st.sidebar:
+        st.header("💰 Tarification")
+        st.write("""
+          **Coûts par requête :**
+          - Input : **3$/M tokens**
+          - Output : **15$/M tokens**
+          - Recherche web : **0.035$/requête**
+        
+          *Coût moyen par question : ~0.04-0.1$*
+        """)
+        
+
+        st.header("🔧 Configuration")
+        if st.button("🔄 Effacer l'historique"):
+            if 'chat_history' in st.session_state:
+                st.session_state.chat_history = []
+            if 'total_session_cost' in st.session_state:
+                st.session_state.total_session_cost = 0.0
+            st.rerun()
+        
+        st.header("📖 Exemples de questions")
+        example_questions = [
+            "Quels sont les délais de préavis pour un licenciement ?",
+            "Comment créer une SAS ?",
+            "Quelles sont les conditions pour un divorce par consentement mutuel ?",
+            "Qu'est-ce que la légitime défense en droit pénal ?",
+            "Comment contester une amende routière ?"
+        ]
+        
+        for i, question in enumerate(example_questions):
+            if st.button(f"📝 {question[:50]}...", key=f"example_{i}"):
+                # Déclencher directement le traitement de l'exemple
+                with st.spinner("🔍 Recherche et analyse en cours..."):
+                    # Ajouter la question à l'historique
+                    st.session_state.chat_history.append({
+                        'type': 'question',
+                        'content': question,
+                        'timestamp': time.time()
+                    })
+                    
+                    # Générer la réponse
+                    response = generate_legal_response(question)
+                    
+                    if response:
+                        # Ajouter la réponse à l'historique
+                        st.session_state.chat_history.append({
+                            'type': 'response',
+                            'content': response,
+                            'timestamp': time.time()
+                        })
+                        
+                        st.rerun()
+
+    # Zone de saisie avec chat_input
+    user_question = st.chat_input(
+        "💬 Posez votre question juridique...",
+        key="chat_input",
+        accept_file="multiple"
+    )
+        
+    # Gestion de l'historique des conversations
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Initialiser le coût total de session
+    if 'total_session_cost' not in st.session_state:
+        st.session_state.total_session_cost = 0.0
+    
+    # Traitement de la question via chat_input
+    if user_question:
+        with st.spinner("🔍 Recherche et analyse en cours..."):
+            # Extraire le texte pour l'affichage dans l'historique
+            if isinstance(user_question, str):
+                display_text = user_question
+            else:
+                display_text = user_question.text if hasattr(user_question, 'text') else str(user_question)
+                # Afficher les fichiers uploadés
+                if hasattr(user_question, 'files') and user_question.files:
+                    files_info = f" [📁 {len(user_question.files)} fichier(s) joint(s)]"
+                    display_text += files_info
+            
+            # Ajouter la question à l'historique
+            st.session_state.chat_history.append({
+                'type': 'question',
+                'content': display_text,
+                'timestamp': time.time()
+            })
+            
+            # Générer la réponse
+            response = generate_legal_response(user_question)
+            
+            if response:
+                # Ajouter la réponse à l'historique
+                st.session_state.chat_history.append({
+                    'type': 'response',
+                    'content': response,
+                    'timestamp': time.time()
+                })
+                
+                st.rerun()
+    
+    # Affichage de l'historique des conversations
+    if st.session_state.chat_history:
+        
+        # Afficher le coût total de la session
+        if st.session_state.total_session_cost > 0:
+            st.info(f"💰 **Coût total de la session : ${st.session_state.total_session_cost:.4f}**")
+        
+        
+        # Afficher les conversations de la plus récente à la plus ancienne
+        for i in range(len(st.session_state.chat_history) - 1, -1, -1):
+            item = st.session_state.chat_history[i]
+            
+            if item['type'] == 'question':
+                st.markdown(f"**❓ Question :** {item['content']}")
+            else:  # response
+                st.markdown("**🤖 Réponse :**")
+                st.markdown(item['content'])
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown("---")
+
+# Configuration de la clé API
+def setup_api_key():
+    st.sidebar.header("🔑 Configuration API")
+    
+    # Charger les variables d'environnement
+    load_dotenv()
+    
+    # Vérifier si la clé API est déjà configurée
+    if not (os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")):
+        st.sidebar.warning("⚠️ Clé API Gemini requise")
+        st.sidebar.info("💡 Créez un fichier `.env` avec : `GEMINI_API_KEY=votre_clé`")
+        
+        # Option pour saisir la clé API via l'interface
+        api_key_input = st.sidebar.text_input(
+            "Saisissez votre clé API Gemini :",
+            type="password",
+            help="Vous pouvez obtenir une clé API sur https://ai.google.dev/"
+        )
+        
+        if api_key_input:
+            os.environ["GEMINI_API_KEY"] = api_key_input
+            st.sidebar.success("✅ Clé API configurée avec succès !")
+    else:
+        st.sidebar.success("✅ Clé API configurée")
+
+if __name__ == "__main__":
+    setup_api_key()
+    main()
