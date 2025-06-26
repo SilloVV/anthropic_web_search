@@ -11,7 +11,18 @@ Date: 2025-06-26
 """
 
 import streamlit as st
-from grok3.grok3_utils import call_grok
+import sys
+import os
+
+# Ajouter le dossier grok3 au path Python
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+grok3_dir = os.path.join(parent_dir, 'grok3')
+sys.path.insert(0, grok3_dir)
+
+# Import simple maintenant que le path est ajouté
+from grok3_utils import call_grok
+
 import time
 from typing import Any, List, Dict, Optional
 
@@ -164,11 +175,19 @@ def render_sidebar_information() -> None:
             "🔧 Sélectionnez le modèle Grok à utiliser :",
             options=list(AVAILABLE_MODELS.keys()),
             index=0,
+            key="model_selector"
         )
         
+        # Vérifier si le modèle a changé et déclencher rerun
+        new_model = AVAILABLE_MODELS[selected_model_name]
+        if new_model != MODEL:
+            MODEL = new_model
+            st.success(f"✅ Modèle changé vers: **{MODEL}**")
+            st.rerun()
+        
         # Mettre à jour la variable MODEL
-        MODEL = AVAILABLE_MODELS[selected_model_name]
-
+        MODEL = new_model
+        
         # Informations sur le modèle
         st.markdown(f"**🔧 Modèle utilisé :** {MODEL}")
         st.markdown("**⚖️ Spécialité :** Droit et questions juridiques")
@@ -366,8 +385,8 @@ def handle_user_query_submission(query: str) -> None:
         final_result = None
         
         try:
+            # Streaming en temps réel avec le générateur
             with st.spinner("🤖 Génération de la réponse en cours..."):
-                # Streaming en temps réel avec le générateur
                 for item in call_grok(MODEL, enhanced_query):
                     if isinstance(item, dict):
                         # C'est le résultat final
@@ -386,7 +405,7 @@ def handle_user_query_submission(query: str) -> None:
                         # C'est un chunk de texte
                         complete_response += item
                         response_container.markdown(complete_response)
-                
+            
             # Nettoyage du statut
             status_container.empty()
             
