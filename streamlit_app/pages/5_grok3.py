@@ -21,7 +21,7 @@ grok3_dir = os.path.join(parent_dir, 'grok3')
 sys.path.insert(0, grok3_dir)
 
 # Import simple maintenant que le path est ajouté
-from grok3_utils import call_grok
+from grok3.grok3_utils import call_grok
 
 import time
 from typing import Any, List, Dict, Optional
