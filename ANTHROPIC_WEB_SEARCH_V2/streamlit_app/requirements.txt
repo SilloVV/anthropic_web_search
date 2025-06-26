@@ -1,4 +1,0 @@
-anthropic
-dotenv
-streamlit
-pypdf2

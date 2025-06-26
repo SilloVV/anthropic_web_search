@@ -3,3 +3,4 @@ dotenv
 streamlit
 firebase-admin
 google-genai>=0.8.0
+openai
