@@ -1,4 +1,3 @@
-from grok3_client import client
 from typing import Generator, Dict, Any, Union
 
 
@@ -6,6 +5,19 @@ import os
 import requests
 import json
 from typing import Generator, Union, Dict, Any
+
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+GROK_API_KEY = os.getenv("GROK_API_KEY")
+    
+client = OpenAI(
+  api_key=GROK_API_KEY,
+  base_url="https://api.x.ai/v1",
+)
+
 
 def call_grok(model:str, query: str) -> Generator[Union[str, Dict[str, Any]], None, None]:
     """
