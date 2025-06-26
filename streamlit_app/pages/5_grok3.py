@@ -23,7 +23,7 @@ streamlit_app_dir = current_file.parent.parent  # Remonter à streamlit_app/
 sys.path.insert(0, str(streamlit_app_dir))
 
 try:
-    from grok3.grok3_utils import call_grok
+    from grok31.grok3_utils import call_grok
     st.success("✅ Import réussi!")
 except ImportError:
     # Import direct en fallback
