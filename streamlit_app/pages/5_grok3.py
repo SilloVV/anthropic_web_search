@@ -19,6 +19,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grok3_dir = os.path.join(parent_dir, 'grok3')
 sys.path.insert(0, grok3_dir)
+print(f"Ajout du chemin Grok-3: {grok3_dir}")
+sys.path.append("/anthroi_web_search/streamlit_app/grok3")
 
 # Import simple maintenant que le path est ajouté
 from grok3.grok3_utils import call_grok
