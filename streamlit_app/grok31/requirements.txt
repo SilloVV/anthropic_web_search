@@ -1,0 +1,8 @@
+#env variables
+python-dotenv
+
+#sdk
+openai
+
+# streamlit 
+streamlit
