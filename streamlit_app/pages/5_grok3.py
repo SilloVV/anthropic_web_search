@@ -17,17 +17,24 @@ import os
 
 # Chemin vers le répertoire racine du projet
 current_file = Path(__file__)
-project_root = current_file.parent.parent.parent  # pages/ -> streamlit_app/ -> racine/
+streamlit_app_dir = current_file.parent.parent  # Remonter à streamlit_app/
 
-# Ajouter le chemin racine
-sys.path.insert(0, str(project_root))
+# Ajouter streamlit_app au sys.path
+sys.path.insert(0, str(streamlit_app_dir))
 
 try:
     from grok3.grok3_utils import call_grok
-    st.success("✅ Module importé!")
-except ImportError as e:
-    st.error(f"❌ Erreur: {e}")
-    call_grok = None
+    st.success("✅ Import réussi!")
+except ImportError:
+    # Import direct en fallback
+    import importlib.util
+    grok3_utils_path = streamlit_app_dir / "grok3" / "grok3_utils.py"
+    spec = importlib.util.spec_from_file_location("grok3_utils", grok3_utils_path)
+    grok3_utils = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(grok3_utils)
+    call_grok = grok3_utils.call_grok
+    st.success("✅ Import direct réussi!")
+
 import time
 from typing import Any, List, Dict, Optional
 
