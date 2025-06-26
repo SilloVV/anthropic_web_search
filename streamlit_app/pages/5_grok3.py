@@ -10,21 +10,24 @@ Version: 0.2 - Adapté pour le streaming Grok
 Date: 2025-06-26
 """
 
+from pathlib import Path
 import streamlit as st
 import sys
 import os
 
-# Ajouter le dossier grok3 au path Python
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-grok3_dir = os.path.join(parent_dir, 'grok3')
-sys.path.insert(0, grok3_dir)
-print(f"Ajout du chemin Grok-3: {grok3_dir}")
-sys.path.append("/anthroi_web_search/streamlit_app/grok3")
+# Chemin vers le répertoire racine du projet
+current_file = Path(__file__)
+project_root = current_file.parent.parent.parent  # pages/ -> streamlit_app/ -> racine/
 
-# Import simple maintenant que le path est ajouté
-from grok3.grok3_utils import call_grok
+# Ajouter le chemin racine
+sys.path.insert(0, str(project_root))
 
+try:
+    from grok3.grok3_utils import call_grok
+    st.success("✅ Module importé!")
+except ImportError as e:
+    st.error(f"❌ Erreur: {e}")
+    call_grok = None
 import time
 from typing import Any, List, Dict, Optional
 
