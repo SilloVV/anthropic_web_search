@@ -1,208 +1,513 @@
-# Solution 1: Vérification et diagnostic complet
-import streamlit as st
-import sys
-from pathlib import Path
-import os
+"""
+Application Streamlit pour l'Assistant Juridique Grok-3
 
-st.set_page_config(page_title="Grok3 Assistant", page_icon="🤖", layout="wide")
+Ce module fournit une interface web interactive permettant aux utilisateurs
+de poser des questions juridiques à Grok-3 et de visualiser les réponses
+dans un format de chat convivial avec streaming en temps réel.
 
-def diagnose_grok3_structure():
-    """Diagnostic complet de la structure grok3"""
-    st.write("## 🔍 Diagnostic Structure Grok3")
-    
-    current_file = Path(__file__)
-    streamlit_app_dir = current_file.parent.parent
-    grok3_dir = streamlit_app_dir / "grok3"
-    
-    st.write(f"**Fichier actuel:** {current_file}")
-    st.write(f"**Répertoire streamlit_app:** {streamlit_app_dir}")
-    st.write(f"**Répertoire grok3:** {grok3_dir}")
-    st.write(f"**grok3 existe:** {grok3_dir.exists()}")
-    
-    if grok3_dir.exists():
-        st.write("**📁 Contenu du dossier grok3:**")
-        files_found = []
-        for item in sorted(grok3_dir.iterdir()):
-            icon = "📁" if item.is_dir() else "📄"
-            files_found.append(item.name)
-            st.write(f"  {icon} {item.name}")
-            
-            # Vérifier les permissions
-            try:
-                readable = os.access(item, os.R_OK)
-                st.write(f"      Permissions lecture: {'✅' if readable else '❌'}")
-            except:
-                st.write("      Permissions: Non vérifiable")
-        
-        # Vérifier les fichiers spécifiques
-        st.write("**🔍 Vérification des fichiers attendus:**")
-        expected_files = ["grok3_utils.py", "grok3_client.py", "__init__.py"]
-        for file_name in expected_files:
-            file_path = grok3_dir / file_name
-            exists = file_path.exists()
-            st.write(f"  📄 {file_name}: {'✅' if exists else '❌'}")
-            if exists:
-                try:
-                    size = file_path.stat().st_size
-                    st.write(f"      Taille: {size} bytes")
-                except:
-                    st.write("      Taille: Non accessible")
-        
-        return files_found
-    else:
-        st.error("❌ Le dossier grok3 n'existe pas!")
-        return []
-
-# Exécuter le diagnostic
-files_in_grok3 = diagnose_grok3_structure()
-
-# Solution 2: Import basé sur les fichiers réellement présents
-current_file = Path(__file__)
-streamlit_app_dir = current_file.parent.parent
-grok3_dir = streamlit_app_dir / "grok3"
-
-call_grok = None
-
-if grok3_dir.exists():
-    # Essayer d'importer depuis grok3_client.py (qui semble exister)
-    grok3_client_path = grok3_dir / "grok3_client.py"
-    grok3_utils_path = grok3_dir / "grok3_utils.py"
-    
-    st.write("## 🔧 Tentatives d'import")
-    
-    # Tentative 1: grok3_utils.py
-    if grok3_utils_path.exists():
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("grok3_utils", grok3_utils_path)
-            grok3_utils = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(grok3_utils)
-            
-            # Vérifier si call_grok existe dans le module
-            if hasattr(grok3_utils, 'call_grok'):
-                call_grok = grok3_utils.call_grok
-                st.success("✅ Import depuis grok3_utils.py réussi!")
-            else:
-                st.warning("⚠️ grok3_utils.py trouvé mais fonction call_grok manquante")
-                # Lister les fonctions disponibles
-                functions = [name for name in dir(grok3_utils) if callable(getattr(grok3_utils, name)) and not name.startswith('_')]
-                st.write(f"Fonctions disponibles: {functions}")
-                
-        except Exception as e:
-            st.error(f"❌ Erreur import grok3_utils.py: {e}")
-    
-    # Tentative 2: grok3_client.py
-    if call_grok is None and grok3_client_path.exists():
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("grok3_client", grok3_client_path)
-            grok3_client = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(grok3_client)
-            
-            # Vérifier si call_grok existe dans grok3_client
-            if hasattr(grok3_client, 'call_grok'):
-                call_grok = grok3_client.call_grok
-                st.success("✅ Import depuis grok3_client.py réussi!")
-            else:
-                st.warning("⚠️ grok3_client.py trouvé mais fonction call_grok manquante")
-                # Lister les fonctions disponibles
-                functions = [name for name in dir(grok3_client) if callable(getattr(grok3_client, name)) and not name.startswith('_')]
-                st.write(f"Fonctions disponibles: {functions}")
-                
-        except Exception as e:
-            st.error(f"❌ Erreur import grok3_client.py: {e}")
-
-# Solution 3: Créer grok3_utils.py si manquant
-if call_grok is None:
-    st.write("## 🛠️ Création de grok3_utils.py")
-    
-    if st.button("📝 Créer grok3_utils.py avec fonction de base"):
-        grok3_utils_content = '''"""
-Module grok3_utils - Fonctions utilitaires pour Grok3
+Auteur: NAKIB Wassil
+Version: 0.2 - Adapté pour le streaming Grok
+Date: 2025-06-26
 """
 
-def call_grok(message: str, **kwargs):
-    """
-    Fonction de base pour appeler Grok3
-    
-    Args:
-        message (str): Message à envoyer à Grok
-        **kwargs: Arguments supplémentaires
-    
-    Returns:
-        str: Réponse de Grok (placeholder)
-    """
-    return f"Grok3 placeholder response for: {message}"
+from pathlib import Path
+import streamlit as st
+import sys
+import os
 
-def test_grok():
-    """Fonction de test"""
-    return "Grok3 utils module loaded successfully!"
+# Chemin vers le répertoire racine du projet
+current_file = Path(__file__)
+streamlit_app_dir = current_file.parent.parent  # Remonter à streamlit_app/
 
-if __name__ == "__main__":
-    print(test_grok())
-'''
+# Ajouter streamlit_app au sys.path
+sys.path.insert(0, str(streamlit_app_dir))
+
+try:
+    from grok3.grok3_utils import call_grok
+    st.success("✅ Import réussi!")
+except ImportError:
+    # Import direct en fallback
+    import importlib.util
+    grok3_utils_path = streamlit_app_dir / "grok3" / "grok3_utils.py"
+    spec = importlib.util.spec_from_file_location("grok3_utils", grok3_utils_path)
+    grok3_utils = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(grok3_utils)
+    call_grok = grok3_utils.call_grok
+    st.success("✅ Import direct réussi!")
+
+import time
+from typing import Any, List, Dict, Optional
+
+
+# ================================
+# CONFIGURATION ET CONSTANTES
+# ================================
+
+PAGE_CONFIG = {
+    "page_title": "Assistant Juridique Grok-3",
+    "page_icon": "⚖️",
+    "layout": "wide"
+}
+
+CUSTOM_CSS = """
+<style>
+    .stTextArea textarea {
+        font-size: 16px;
+        border-radius: 10px;
+    }
+    
+    .stButton button {
+        font-weight: bold;
+        border-radius: 10px;
+    }
+    
+    .chat-message {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .user-message {
+        background-color: #e8f4fd;
+    }
+    
+    .assistant-message {
+        background-color: #f0f8f0;
+    }
+    
+    .legal-highlight {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        padding: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    
+    .streaming-indicator {
+        color: #1f77b4;
+        font-style: italic;
+    }
+    
+    .metrics-container {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 10px;
+        margin: 10px 0;
+    }
+</style>
+"""
+
+AVAILABLE_MODELS = {
+    "Grok-3 Latest (Recommandé)": "grok-3-latest",
+    "Grok-3 Mini": "grok-3-mini", 
+    "Grok-3 Fast": "grok-3-fast",
+    "Grok-3 Mini Fast": "grok-3-mini-fast"
+}
+
+# Dictionnaire des coûts par modèle (prix par million de tokens)
+MODEL_COSTS = {
+    "grok-3-latest": {"input_cost": 3.00, "output_cost": 15.00},
+    "grok-3-mini": {"input_cost": 0.30, "output_cost": 0.50},
+    "grok-3-fast": {"input_cost": 5.00, "output_cost": 25.00},
+    "grok-3-mini-fast": {"input_cost": 0.60, "output_cost": 4.00}
+}
+
+MODEL = "grok-3-latest"  # Variable globale pour le modèle actuel
+
+# ================================
+# FONCTIONS DE COÛT
+# ================================
+
+def calculate_tokens_from_chars(char_count: int) -> int:
+    """Calcule le nombre de tokens basé sur le nombre de caractères (1 token = 5 chars)."""
+    return max(1, char_count // 5)
+
+def calculate_cost_from_chars(input_chars: int, output_chars: int, model_code: str) -> float:
+    """Calcule le coût basé sur le nombre de caractères."""
+    if model_code not in MODEL_COSTS:
+        return 0.0
+    
+    input_tokens = calculate_tokens_from_chars(input_chars)
+    output_tokens = calculate_tokens_from_chars(output_chars)
+    
+    cost_info = MODEL_COSTS[model_code]
+    input_cost = (input_tokens / 1_000_000) * cost_info['input_cost']
+    output_cost = (output_tokens / 1_000_000) * cost_info['output_cost']
+    
+    return input_cost + output_cost
+
+# ================================
+# FONCTIONS DE CONFIGURATION
+# ================================
+
+def configure_streamlit_page() -> None:
+    """Configure les paramètres de base de la page Streamlit."""
+    st.set_page_config(**PAGE_CONFIG)
+
+def apply_custom_styling() -> None:
+    """Applique le CSS personnalisé à l'interface Streamlit."""
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# ================================
+# FONCTIONS D'INITIALISATION
+# ================================
+
+def initialize_session_state() -> None:
+    """Initialise les variables de session Streamlit nécessaires."""
+    if 'conversation_history' not in st.session_state:
+        st.session_state.conversation_history = []
+    
+    if 'current_query' not in st.session_state:
+        st.session_state.current_query = ""
+    
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = []
+    
+    if 'last_response_metrics' not in st.session_state:
+        st.session_state.last_response_metrics = None
+
+# ================================
+# FONCTIONS D'INTERFACE UTILISATEUR
+# ================================
+
+def render_page_header() -> None:
+    """Affiche l'en-tête principal de la page."""
+    st.title("⚖️ Assistant Juridique Grok-3")
+    st.markdown("*Posez vos questions juridiques à un expert IA avec streaming en temps réel*")
+    st.markdown("---")
+
+def render_sidebar_information() -> None:
+    """Affiche les informations et instructions dans la barre latérale."""
+    global MODEL
+    
+    with st.sidebar:
+        st.header("ℹ️ Informations sur l'Assistant")
+        
+        # Sélecteur de modèle
+        selected_model_name = st.selectbox(
+            "🔧 Sélectionnez le modèle Grok à utiliser :",
+            options=list(AVAILABLE_MODELS.keys()),
+            index=0,
+            key="model_selector"
+        )
+        
+        # Vérifier si le modèle a changé et déclencher rerun
+        new_model = AVAILABLE_MODELS[selected_model_name]
+        if new_model != MODEL:
+            MODEL = new_model
+            st.success(f"✅ Modèle changé vers: **{MODEL}**")
+            st.rerun()
+        
+        # Mettre à jour la variable MODEL
+        MODEL = new_model
+        
+        # Informations sur le modèle
+        st.markdown(f"**🔧 Modèle utilisé :** {MODEL}")
+        st.markdown("**⚖️ Spécialité :** Droit et questions juridiques")
+        st.markdown("**🔄 Mode :** Streaming temps réel")
+        
+        # Affichage des coûts du modèle sélectionné
+        if MODEL in MODEL_COSTS:
+            cost_info = MODEL_COSTS[MODEL]
+            with st.expander("💰 Tarifs du modèle", expanded=False):
+                st.write(f"• **Entrée:** ${cost_info['input_cost']:.2f} / million tokens")
+                st.write(f"• **Sortie:** ${cost_info['output_cost']:.2f} / million tokens")
+                st.caption("💡 *1 token ≈ 5 caractères*")
+        
+        # Métriques de la dernière réponse
+        if st.session_state.last_response_metrics:
+            st.header("📊 Dernières Métriques")
+            metrics = st.session_state.last_response_metrics
+            
+            st.metric("Caractères", metrics.get('chars_count', 0))
+            st.metric("Citations", metrics.get('citations_count', 0))
+            
+            # Affichage du coût si disponible
+            if 'question_cost' in metrics:
+                st.metric("💰 Coût Question", f"${metrics['question_cost']:.6f}")
+            
+            if metrics.get('citations'):
+                with st.expander("🔗 Citations"):
+                    for i, citation in enumerate(metrics['citations'][:5], 1):
+                        st.write(f"{i}. {citation[:100]}...")
+
+def render_conversation_display() -> None:
+    """Affiche l'historique de conversation dans un format chat."""
+    if st.session_state.conversation_history:
+        for message in st.session_state.conversation_history:
+            display_single_message(message)
+
+def handle_chat_input() -> None:
+    """Gère l'entrée de chat utilisateur et traite les messages."""
+    # Utiliser la query stockée en session si disponible
+    default_value = st.session_state.current_query
+    
+    user_input = st.chat_input(
+        placeholder="Posez votre question juridique ici...",
+        key="legal_chat_input"
+    )
+    
+    # Si on a une query en session, l'utiliser et la nettoyer
+    if st.session_state.current_query and not user_input:
+        user_input = st.session_state.current_query
+        st.session_state.current_query = ""
+    
+    if user_input:
+        handle_user_query_submission(user_input)
+
+# ================================
+# FONCTIONS DE GESTION DES MESSAGES
+# ================================
+
+def add_message_to_history(role: str, content: str, metadata: Optional[Dict] = None) -> None:
+    """Ajoute un message à l'historique de conversation."""
+    message = {
+        "role": role,
+        "content": content,
+        "timestamp": time.strftime("%H:%M:%S"),
+        "metadata": metadata or {}
+    }
+    st.session_state.conversation_history.append(message)
+
+def clear_conversation_history() -> None:
+    """Efface complètement l'historique de conversation."""
+    st.session_state.conversation_history = []
+    st.session_state.last_response_metrics = None
+
+def display_single_message(message: Dict[str, Any]) -> None:
+    """Affiche un message individuel dans l'interface chat."""
+    role_emoji = "👤" if message["role"] == "user" else "⚖️"
+    role_name = "Vous" if message["role"] == "user" else "Assistant Juridique"
+    
+    with st.chat_message(message["role"]):
+        st.markdown(f"**{role_emoji} {role_name}** - {message['timestamp']}")
+        st.markdown(message["content"])
+        
+        # Afficher les métadonnées si disponibles
+        if message.get("metadata") and message["role"] == "assistant":
+            metadata = message["metadata"]
+            if metadata.get("citations_count", 0) > 0:
+                st.caption(f"📚 {metadata['citations_count']} citations trouvées")
+
+def render_conversation_controls() -> None:
+    """Affiche les contrôles de gestion de conversation."""
+    if st.session_state.conversation_history:
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("🗑️ Effacer l'historique", type="secondary"):
+                clear_conversation_history()
+                st.rerun()
+        
+        with col2:
+            if st.button("📄 Exporter la conversation", type="secondary"):
+                export_conversation_history()
+
+def export_conversation_history() -> None:
+    """Exporte l'historique de conversation en format texte."""
+    if not st.session_state.conversation_history:
+        st.warning("Aucune conversation à exporter.")
+        return
+    
+    export_text = "=== HISTORIQUE CONVERSATION ASSISTANT JURIDIQUE ===\n\n"
+    
+    for message in st.session_state.conversation_history:
+        role_name = "UTILISATEUR" if message["role"] == "user" else "ASSISTANT"
+        export_text += f"[{message['timestamp']}] {role_name}:\n"
+        export_text += f"{message['content']}\n\n"
+        export_text += "-" * 50 + "\n\n"
+    
+    st.download_button(
+        label="💾 Télécharger l'historique",
+        data=export_text,
+        file_name=f"conversation_juridique_{time.strftime('%Y%m%d_%H%M%S')}.txt",
+        mime="text/plain"
+    )
+
+# ================================
+# FONCTIONS DE TRAITEMENT GROK-3
+# ================================
+
+def enhance_user_query(query: str, has_file: bool = False) -> str:
+    """Améliore la query utilisateur avec du contexte juridique."""
+    if has_file:
+        enhanced_query = f"""
+CONTEXTE: Question juridique avec document joint.
+QUESTION: {query}
+
+Veuillez analyser cette question juridique en tenant compte du document fourni.
+Donnez une réponse détaillée et structurée avec :
+1. Une analyse claire de la situation
+2. Les références légales pertinentes
+3. Les implications pratiques
+4. Les conseils d'action si approprié
+"""
+    else:
+        enhanced_query = f"""
+CONTEXTE: Question juridique.
+QUESTION: {query}
+
+Veuillez fournir une réponse juridique claire et détaillée avec :
+1. Une explication du cadre juridique applicable
+2. Les références légales pertinentes
+3. Les implications et conséquences
+4. Des conseils pratiques si approprié
+"""
+    
+    return enhanced_query
+
+def handle_user_query_submission(query: str) -> None:
+    """Gère la soumission d'une question utilisateur avec streaming."""
+    if not query.strip():
+        st.warning("⚠️ Veuillez entrer une question avant d'envoyer.")
+        return
+    
+    # Calculer le coût de la question
+    question_cost = calculate_cost_from_chars(len(query), 0, MODEL)
+    
+    # Vérification de fichiers joints
+    has_uploaded_file = bool(st.session_state.uploaded_files)
+    
+    # Ajout de la question utilisateur à l'historique
+    display_query = query
+    if has_uploaded_file:
+        file_name = st.session_state.uploaded_files[0].name
+        display_query += f"\n\n📄 *Document joint: {file_name}*"
+    
+    add_message_to_history("user", display_query)
+    
+    # Affichage de la question utilisateur
+    display_single_message({
+        "role": "user", 
+        "content": display_query,
+        "timestamp": time.strftime("%H:%M:%S"),
+        "metadata": {}
+    })
+    
+    # Préparation de la requête améliorée
+    enhanced_query = enhance_user_query(query, has_uploaded_file)
+    
+    # Streaming avec Grok-3
+    with st.chat_message("assistant"):
+        st.markdown(f"**⚖️ Assistant Juridique** - {time.strftime('%H:%M:%S')}")
+        
+        # Container pour le streaming
+        response_container = st.empty()
+        status_container = st.empty()
+        complete_response = ""
+        final_result = None
         
         try:
-            grok3_utils_path = grok3_dir / "grok3_utils.py"
-            grok3_utils_path.write_text(grok3_utils_content)
-            st.success(f"✅ Fichier créé: {grok3_utils_path}")
-            st.info("🔄 Rechargez la page pour utiliser le nouveau module")
-        except Exception as e:
-            st.error(f"❌ Erreur création fichier: {e}")
+            # Streaming en temps réel avec le générateur
+            with st.spinner("🤖 Génération de la réponse en cours..."):
+                for item in call_grok(MODEL, enhanced_query):
+                    if isinstance(item, dict):
+                        # C'est le résultat final
+                        if item.get("type") == "final_result":
+                            final_result = item
+                            status_container.markdown("✅ *Réponse générée avec succès*")
+                            break
+                        elif item.get("type") == "error":
+                            # Gestion d'erreur
+                            error_msg = f"❌ Erreur: {item['message']}"
+                            response_container.error(error_msg)
+                            status_container.empty()
+                            add_message_to_history("assistant", error_msg)
+                            return
+                    else:
+                        # C'est un chunk de texte
+                        complete_response += item
+                        response_container.markdown(complete_response)
+            
+            # Nettoyage du statut
+            status_container.empty()
+            
+            # Traitement du résultat final
+            if final_result:
+                # Calculer le coût total de la conversation
+                total_cost = calculate_cost_from_chars(len(enhanced_query), len(complete_response), MODEL)
+                
+                # Stocker les métriques pour la sidebar
+                st.session_state.last_response_metrics = {
+                    'chars_count': len(complete_response),
+                    'citations_count': len(final_result.get('citations', [])),
+                    'citations': final_result.get('citations', []),
+                    'question_cost': total_cost  # Coût total de la conversation
+                }
+                
+                # Affichage du coût
+                st.info(f"💰 **Coût de cette conversation:** ${total_cost:.6f}")
+                
+                # Affichage des métriques en bas de la réponse
+                if final_result.get('citations'):
+                    with st.expander(f"📚 Citations trouvées ({len(final_result['citations'])})", expanded=False):
+                        for i, citation in enumerate(final_result['citations'], 1):
+                            st.write(f"{i}. {citation}")
+                
+                # Ajout à l'historique avec métadonnées
+                metadata = {
+                    'citations_count': len(final_result.get('citations', [])),
+                    'chars_count': len(complete_response)
+                }
+                add_message_to_history("assistant", complete_response, metadata)
+            else:
+                # Pas de résultat final reçu
+                add_message_to_history("assistant", complete_response)
+                
+        except Exception as error:
+            error_msg = f"❌ Erreur lors du streaming: {str(error)}"
+            response_container.error(error_msg)
+            status_container.empty()
+            add_message_to_history("assistant", error_msg)
 
-# Solution 4: Créer __init__.py si manquant
-init_path = grok3_dir / "__init__.py"
-if grok3_dir.exists() and not init_path.exists():
-    if st.button("📝 Créer __init__.py"):
-        try:
-            init_content = '"""Module grok3"""\n'
-            init_path.write_text(init_content)
-            st.success(f"✅ Fichier __init__.py créé: {init_path}")
-        except Exception as e:
-            st.error(f"❌ Erreur création __init__.py: {e}")
+# ================================
+# FONCTION UTILITAIRE
+# ================================
 
-# Solution 5: Interface de fallback
-if call_grok is None:
-    st.warning("⚠️ Fonction call_grok non disponible. Utilisation d'une fonction de fallback.")
+def render_application_footer() -> None:
+    """Affiche le pied de page de l'application."""
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style='text-align: center; color: #666; padding: 20px;'>
+            ⚖️ Propulsé par <strong>Grok-3</strong> | 
+            🎨 Interface <strong>Streamlit</strong> | 
+            📚 Assistant Juridique Intelligent | 
+            🔄 <strong>Streaming Temps Réel</strong>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+
+# ================================
+# FONCTION PRINCIPALE
+# ================================
+
+def main() -> None:
+    """Fonction principale de l'application Streamlit."""
+    # Configuration et initialisation
+    configure_streamlit_page()
+    apply_custom_styling()
+    initialize_session_state()
     
-    def call_grok_fallback(message: str, **kwargs):
-        return f"[FALLBACK] Grok3 non disponible. Message reçu: {message}"
+    # Rendu de l'interface
+    render_page_header()
+    render_sidebar_information()
     
-    call_grok = call_grok_fallback
-
-# Interface utilisateur
-st.write("## 🤖 Interface Grok3")
-
-if call_grok:
-    st.write("✅ Fonction call_grok disponible")
+    # Affichage de la conversation existante
+    render_conversation_display()
     
-    # Test de la fonction
-    if st.button("🧪 Tester call_grok"):
-        try:
-            result = call_grok("Test message")
-            st.write(f"**Résultat:** {result}")
-        except Exception as e:
-            st.error(f"❌ Erreur test: {e}")
+    # Gestion de l'entrée chat
+    handle_chat_input()
     
-    # Interface principale
-    user_input = st.text_area("💬 Votre message pour Grok3:", placeholder="Tapez votre question ici...")
+    # Contrôles de conversation
+    render_conversation_controls()
     
-    if st.button("🚀 Envoyer à Grok3") and user_input:
-        try:
-            with st.spinner("🤖 Grok3 réfléchit..."):
-                response = call_grok(user_input)
-            st.write("**Réponse de Grok3:**")
-            st.write(response)
-        except Exception as e:
-            st.error(f"❌ Erreur appel Grok3: {e}")
+    # Pied de page
+    render_application_footer()
 
-else:
-    st.error("❌ Impossible de charger la fonction call_grok")
+# ================================
+# POINT D'ENTRÉE
+# ================================
 
-# Afficher les informations de debug en bas
-with st.expander("🔍 Informations de debug"):
-    st.write(f"**sys.path:** {sys.path[:3]}...")  # Premiers éléments seulement
-    st.write(f"**Fichiers dans grok3:** {files_in_grok3}")
-    st.write(f"**call_grok disponible:** {call_grok is not None}")
-    if call_grok:
-        st.write(f"**Type de call_grok:** {type(call_grok)}")
+if __name__ == "__main__":
+    main()
